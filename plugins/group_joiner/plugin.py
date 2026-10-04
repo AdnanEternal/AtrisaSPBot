@@ -5,6 +5,6 @@ from . import handlers
 
 class GroupJoinerPlugin(BasePlugin):
     name = "Group Joiner"
-    version = "0.1.1"
+    version = "0.1.2"
 
     on_message = handlers.on_message

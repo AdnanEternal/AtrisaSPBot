@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 from splusthon import events
 from splusthon.errors import (
+    ChannelPrivateError,
     FloodWaitError,
     RPCError,
 )
@@ -92,7 +93,14 @@ async def on_message(
             )
 
         return
-
+    
+    except ChannelPrivateError:
+        await event.reply(
+            "❌ آتریسا نمی‌تواند وارد این گروه شود.\n"
+            "🔒 احتمالاً گروه خصوصی است یا آتریسا از آن بن شده است."
+        )
+        return
+    
     except RPCError as exc:
         error_text = str(exc).upper()
 
