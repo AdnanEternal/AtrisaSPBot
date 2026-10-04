@@ -1,327 +1,300 @@
 from typing import TYPE_CHECKING
 
-from splusthon import events, utils
-from splusthon.tl import functions, types
+from splusthon import events
 
-from core.decorators import command, on_event
-from core.permissions import (
-    get_admins,
-    is_chat_admin,
-    is_owner,
-)
+from core.decorators import command
+from core.permissions import is_owner
 
 from .backup.backup import DatabaseBackupManager
 from .github_manager.manager import GitHubManager
 from .plugin_updater import PluginUpdateManager
 
+
 if TYPE_CHECKING:
     from .plugin import SystemPlugin
 
+
 HELP_PAGE_SIZE = 6
-
-
-async def _send_admin_list(
-    self: "SystemPlugin",
-    event: events.NewMessage.Event,
-    admins,
-) -> None:
-
-    if not admins:
-        await event.reply(
-            "ℹ️ هیچ ادمینی پیدا نشد."
-        )
-        return
-
-    text_parts = [
-        "👑 ادمین‌های این گروه:",
-        f"👥 تعداد: {len(admins)} نفر",
-    ]
-
-    entity_positions = []
-
-    for index, admin in enumerate(
-        admins,
-        start=1,
-    ):
-        entity = admin.entity
-
-        first_name = (
-            getattr(
-                entity,
-                "first_name",
-                None,
-            )
-            or ""
-        ).strip()
-
-        last_name = (
-            getattr(
-                entity,
-                "last_name",
-                None,
-            )
-            or ""
-        ).strip()
-
-        username = (
-            getattr(
-                entity,
-                "username",
-                None,
-            )
-            or None
-        )
-
-        full_name = (
-            f"{first_name} {last_name}"
-        ).strip()
-
-        if not full_name:
-            full_name = str(
-                admin.user_id
-            )
-
-        text_parts.extend([
-            "----------------------------------",
-            f"👤 ادمین شماره {index}:",
-            f"📝 نام: {full_name}",
-            f"🔗 نام کاربری: "
-            f"{('@' + username) if username else 'ندارد'}",
-            f"🏷️ نقش: {admin.title}",
-            "🔎 [مشاهده نمایه]",
-        ])
-
-    text = "\n".join(text_parts)
-
-    # entity ها را بعد از ساخته شدن متن کامل محاسبه می‌کنیم.
-    search_from = 0
-
-    for admin in admins:
-        label = "[مشاهده نمایه]"
-
-        position = text.find(
-            label,
-            search_from,
-        )
-
-        if position == -1:
-            continue
-
-        entity = admin.entity
-
-        input_user = utils.get_input_user(
-            entity
-        )
-
-        entity_positions.append(
-            types.InputMessageEntityMentionName(
-                offset=_utf16_length(
-                    text[:position]
-                ),
-                length=_utf16_length(
-                    label
-                ),
-                user_id=input_user,
-            )
-        )
-
-        search_from = (
-            position
-            + len(label)
-        )
-
-    await event.reply(
-        text,
-        formatting_entities=entity_positions,
-        parse_mode=None,
-    )
-
-
-def _is_admin_list_shortcut(text: str) -> bool:
-    text = (text or "").strip()
-
-    if not text:
-        return False
-
-    parts = text.split()
-
-    # لیست ادمین / ادمین لیست
-    if len(parts) == 2:
-        if set(parts) == {"لیست", "ادمین"}:
-            return True
-
-        # لیست ادمینها / ادمینها لیست
-        if set(parts) == {"لیست", "ادمینها"}:
-            return True
-
-        return False
-
-    # لیست ادمین ها / ادمین ها لیست
-    if len(parts) == 3:
-        return (
-            "لیست" in parts
-            and "ادمین" in parts
-            and "ها" in parts
-        )
-
-    return False
-
-
-def _utf16_length(text: str) -> int:
-    return len(
-        text.encode("utf-16-le")
-    ) // 2
-
 
 
 @command(
     name="راهنما",
     permission="everyone",
-    chat_type="all",
-    description="❓لیست کامندهای قابل استفاده را نشان می‌دهد.",
+    chat_type="private",
+    description="❓ لیست کامندهای قابل استفاده را نشان می‌دهد.",
 )
 async def show_help(
     self: "SystemPlugin",
     event: events.NewMessage.Event,
 ) -> None:
     sender_id = event.sender_id
+
     is_owner_user = is_owner(sender_id)
 
-    # داخل گروه بررسی می‌کنیم کاربر ادمین هست یا نه.
-    is_admin_user = False
-
-    if event.is_group:
-        chat = await event.get_chat()
-        is_admin_user = await is_chat_admin(
-            self.client,
-            chat,
-            sender_id,
-        )
-
-    # تعیین می‌کنیم چه سطح دسترسی‌هایی قابل نمایش باشند.
     if is_owner_user:
-        allowed_permissions = {"everyone", "admin", "owner"}
-
-    elif event.is_private:
-        allowed_permissions = {"everyone", "admin"}
-
-    elif is_admin_user:
-        allowed_permissions = {"everyone", "admin"}
-
-    elif is_admin_user:
-        allowed_permissions = {"everyone", "admin"}
-
+        allowed_permissions = {
+            "everyone",
+            "admin",
+            "owner",
+        }
     else:
-        allowed_permissions = {"everyone"}
+        allowed_permissions = {
+            "everyone",
+        }
 
     commands = [
         cmd
         for cmd in self.command_manager.get_all_commands()
-        if cmd.permission in allowed_permissions
+        if (
+            cmd.permission in allowed_permissions
+            and cmd.chat_type == "private"
+        )
     ]
 
-    commands.sort(key=lambda cmd: cmd.name)
+    commands.sort(
+        key=lambda cmd: cmd.name
+    )
 
     if not commands:
-        await event.reply("📖 هیچ کامندی برای نمایش وجود ندارد.")
+        await event.reply(
+            "📖 هیچ کامندی برای نمایش وجود ندارد."
+        )
         return
 
-    # صفحه
     try:
-        page = int(event.args[0]) if event.args else 1
-    except (ValueError, TypeError):
+        page = (
+            int(event.args[0])
+            if event.args
+            else 1
+        )
+
+    except (
+        ValueError,
+        TypeError,
+    ):
         page = 1
 
     if page < 1:
         page = 1
 
     total_pages = (
-        len(commands) + HELP_PAGE_SIZE - 1
+        len(commands)
+        + HELP_PAGE_SIZE
+        - 1
     ) // HELP_PAGE_SIZE
 
     if page > total_pages:
         page = total_pages
 
-    start = (page - 1) * HELP_PAGE_SIZE
-    end = start + HELP_PAGE_SIZE
+    start = (
+        page - 1
+    ) * HELP_PAGE_SIZE
 
-    page_commands = commands[start:end]
+    end = (
+        start
+        + HELP_PAGE_SIZE
+    )
+
+    page_commands = commands[
+        start:end
+    ]
 
     lines = [
-        f"`!{cmd.name}`\n{cmd.description or 'بدون توضیح'}"
+        (
+            f"`!{cmd.name}`\n"
+            f"{cmd.description or 'بدون توضیح'}"
+        )
         for cmd in page_commands
     ]
 
     text = (
-        f"📖 راهنما — صفحه {page}/{total_pages}\n\n"
+        f"📖 راهنما — صفحه "
+        f"{page}/{total_pages}\n\n"
         + "\n\n".join(lines)
     )
 
     if total_pages > 1:
-        text += (
-            "\n\n"
-            f"📄 برای صفحه بعد: `!راهنما {page + 1}`"
-            if page < total_pages
-            else
-            "\n\n"
-            f"📄 برای صفحه قبل: `!راهنما {page - 1}`"
-        )
+        if page < total_pages:
+            text += (
+                "\n\n"
+                f"📄 برای صفحه بعد: "
+                f"`!راهنما {page + 1}`"
+            )
+        else:
+            text += (
+                "\n\n"
+                f"📄 برای صفحه قبل: "
+                f"`!راهنما {page - 1}`"
+            )
 
     await event.reply(text)
 
 
-
 @command(
-    name="لیست ادمین ها",
-    permission="admin",
-    chat_type="group",
-    description="لیست ادمین‌های گروه را نشان می‌دهد.",
+    name="گیتهاب چک",
+    permission="owner",
+    chat_type="private",
+    description=(
+        "🔗 اتصال ربات به مخزن GitHub "
+        "را بررسی می‌کند."
+    ),
 )
-async def list_admins(
+async def github_check(
     self: "SystemPlugin",
     event: events.NewMessage.Event,
 ) -> None:
-
     try:
-        chat = await event.get_chat()
+        github = GitHubManager()
 
-        admins = await get_admins(
-            self.client,
-            chat,
-            force_refresh=True,
-        )
+        await github.check_connection()
 
-    except Exception:
-        print(
-            "❌ خطا در دریافت لیست ادمین‌های گروه:"
-        )
-        import traceback
-        traceback.print_exc()
-
+    except Exception as exc:
         await event.reply(
-            "❌ دریافت لیست ادمین‌ها ناموفق بود."
+            "❌ اتصال به GitHub ناموفق بود.\n"
+            f"`{exc}`"
         )
         return
 
-    if admins is None:
-        await event.reply(
-            "❌ امکان دریافت ادمین‌های این گروه وجود ندارد."
-        )
-        return
-
-    await _send_admin_list(
-        self,
-        event,
-        admins,
+    await event.reply(
+        "✅ اتصال به GitHub "
+        "با موفقیت برقرار شد."
     )
 
+
+@command(
+    name="دیتابیس بکاپ",
+    permission="owner",
+    chat_type="private",
+    description=(
+        "💾 یک نسخه از دیتابیس را "
+        "در GitHub ذخیره می‌کند."
+    ),
+)
+async def database_backup(
+    self: "SystemPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    try:
+        github = GitHubManager()
+
+        backup = DatabaseBackupManager(
+            db=self.db,
+            github=github,
+        )
+
+        await backup.create_backup()
+
+    except Exception as exc:
+        await event.reply(
+            "❌ بکاپ دیتابیس ناموفق بود.\n"
+            f"`{exc}`"
+        )
+        return
+
+    await event.reply(
+        "✅ بکاپ دیتابیس با موفقیت "
+        "در GitHub ذخیره شد."
+    )
+
+
+@command(
+    name="دیتابیس بازیابی",
+    permission="owner",
+    chat_type="private",
+    description=(
+        "♻️ دیتابیس را از آخرین بکاپ "
+        "GitHub بازیابی می‌کند."
+    ),
+)
+async def database_restore(
+    self: "SystemPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    try:
+        github = GitHubManager()
+
+        backup = DatabaseBackupManager(
+            db=self.db,
+            github=github,
+        )
+
+        await backup.restore_backup()
+
+        for plugin in (
+            self.plugin_manager.get_all_plugins()
+        ):
+            try:
+                await plugin.on_load()
+
+            except Exception as exc:
+                print(
+                    "❌ خطا در بازسازی دیتابیس پلاگین "
+                    f"'{plugin.name}': {exc}"
+                )
+
+    except Exception as exc:
+        await event.reply(
+            "❌ بازیابی دیتابیس ناموفق بود.\n"
+            f"`{exc}`"
+        )
+        return
+
+    await event.reply(
+        "✅ دیتابیس با موفقیت از "
+        "آخرین بکاپ GitHub بازیابی شد."
+    )
+
+
+@command(
+    name="لیست پلاگین ها",
+    permission="owner",
+    chat_type="private",
+    description=(
+        "📦 لیست پلاگین‌های نصب‌شده "
+        "و نسخه‌ی آن‌ها را نشان می‌دهد."
+    ),
+)
+async def list_plugins(
+    self: "SystemPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    plugins = (
+        self.plugin_manager.get_all_plugins()
+    )
+
+    if not plugins:
+        await event.reply(
+            "📦 هیچ پلاگینی نصب نشده."
+        )
+        return
+
+    lines = [
+        (
+            f"🔹 **{plugin.name}** — "
+            f"version: {plugin.version}"
+        )
+        for plugin in sorted(
+            plugins,
+            key=lambda plugin: (
+                plugin.name.lower()
+            ),
+        )
+    ]
+
+    await event.reply(
+        "📦 پلاگین‌های نصب‌شده:\n\n"
+        + "\n".join(lines)
+    )
 
 
 @command(
     name="پلاگین آپدیت چک",
     permission="owner",
-    chat_type="all",
-    description="🔄 وجود پلاگین جدید یا نسخه‌ی جدید پلاگین‌ها را بررسی می‌کند.",
+    chat_type="private",
+    description=(
+        "🔄 وجود پلاگین جدید یا نسخه‌ی "
+        "جدید پلاگین‌ها را بررسی می‌کند."
+    ),
 )
 async def plugin_update_check(
     self: "SystemPlugin",
@@ -337,176 +310,64 @@ async def plugin_update_check(
 
         result = await updater.check()
 
-    except Exception as e:
+    except Exception as exc:
         await event.reply(
-            f"❌ بررسی پلاگین‌ها ناموفق بود.\n`{e}`"
+            "❌ بررسی پلاگین‌ها ناموفق بود.\n"
+            f"`{exc}`"
         )
         return
 
     lines = []
 
     if result.new_plugins:
-        lines.append("📦 پلاگین‌های جدید:")
+        lines.append(
+            "📦 پلاگین‌های جدید:"
+        )
 
         for plugin in result.new_plugins:
             lines.append(
-                f"🔹 {plugin.name} — v{plugin.version}"
+                f"🔹 {plugin.name} — "
+                f"v{plugin.version}"
             )
 
     if result.updates:
         if lines:
             lines.append("")
 
-        lines.append("🔄 بروزرسانی‌های موجود:")
+        lines.append(
+            "🔄 بروزرسانی‌های موجود:"
+        )
 
-        for plugin, local_version in result.updates:
+        for (
+            plugin,
+            local_version,
+        ) in result.updates:
             lines.append(
                 f"🔹 {plugin.name} — "
-                f"v{local_version} → v{plugin.version}"
+                f"v{local_version} "
+                f"→ v{plugin.version}"
             )
 
     if not lines:
         await event.reply(
-            "✅ هیچ پلاگین جدید یا بروزرسانی‌ای پیدا نشد."
+            "✅ هیچ پلاگین جدید یا "
+            "بروزرسانی‌ای پیدا نشد."
         )
         return
 
     await event.reply(
         "\n".join(lines)
     )
-
-
-
-
-
-
-@command(
-    name="گیتهاب چک",
-    permission="owner",
-    chat_type="all",
-    description="🔗 اتصال ربات به مخزن GitHub را بررسی می‌کند.",
-)
-async def github_check(
-    self: "SystemPlugin",
-    event: events.NewMessage.Event,
-) -> None:
-    try:
-        github = GitHubManager()
-        await github.check_connection()
-
-    except Exception as e:
-        await event.reply(f"❌ اتصال به GitHub ناموفق بود.\n`{e}`")
-        return
-
-    await event.reply("✅ اتصال به GitHub با موفقیت برقرار شد.")
-
-
-@command(
-    name="دیتابیس بکاپ",
-    permission="owner",
-    chat_type="all",
-    description="💾 یک نسخه از دیتابیس را در GitHub ذخیره می‌کند.",
-)
-async def database_backup(
-    self: "SystemPlugin",
-    event: events.NewMessage.Event,
-) -> None:
-    try:
-        github = GitHubManager()
-        backup = DatabaseBackupManager(
-            db=self.db,
-            github=github,
-        )
-
-        await backup.create_backup()
-
-    except Exception as e:
-        await event.reply(f"❌ بکاپ دیتابیس ناموفق بود.\n`{e}`")
-        return
-
-    await event.reply("✅ بکاپ دیتابیس با موفقیت در GitHub ذخیره شد.")
-
-
-
-@command(
-    name="دیتابیس بازیابی",
-    permission="owner",
-    chat_type="all",
-    description="♻️ دیتابیس را از آخرین بکاپ GitHub بازیابی می‌کند.",
-)
-async def database_restore(
-    self: "SystemPlugin",
-    event: events.NewMessage.Event,
-) -> None:
-    try:
-        github = GitHubManager()
-
-        backup = DatabaseBackupManager(
-            db=self.db,
-            github=github,
-        )
-
-        await backup.restore_backup()
-        for plugin in self.plugin_manager.get_all_plugins():
-            try:
-                await plugin.on_load()
-            except Exception as e:
-                print(
-                    f"❌ خطا در بازسازی دیتابیس پلاگین "
-                    f"'{plugin.name}': {e}"
-                )
-
-    except Exception as e:
-        await event.reply(
-            f"❌ بازیابی دیتابیس ناموفق بود.\n`{e}`"
-        )
-        return
-
-    await event.reply(
-        "✅ دیتابیس با موفقیت از آخرین بکاپ GitHub بازیابی شد."
-    )
-
-
-
-
-
-
-
-
-
-@command(
-    name="لیست پلاگین ها",
-    permission="owner",
-    chat_type="all",
-    description="📦 لیست پلاگین‌های نصب‌شده و نسخه‌ی آن‌ها را نشان می‌دهد.",
-)
-async def list_plugins(
-    self: "SystemPlugin",
-    event: events.NewMessage.Event,
-) -> None:
-    plugins = self.plugin_manager.get_all_plugins()
-
-    if not plugins:
-        await event.reply("📦 هیچ پلاگینی نصب نشده.")
-        return
-
-    lines = [
-        f"🔹 **{plugin.name}** — version: {plugin.version}"
-        for plugin in sorted(plugins, key=lambda p: p.name.lower())
-    ]
-
-    await event.reply(
-        "📦 پلاگین‌های نصب‌شده:\n\n" +
-        "\n".join(lines)
-    )
-
 
 
 @command(
     name="پلاگین دریافت",
     permission="owner",
-    chat_type="all",
-    description="📥 یک پلاگین را از GitHub دریافت و در runtime فعال می‌کند.",
+    chat_type="private",
+    description=(
+        "📥 یک پلاگین را از GitHub "
+        "دریافت و در runtime فعال می‌کند."
+    ),
 )
 async def plugin_install(
     self: "SystemPlugin",
@@ -535,24 +396,28 @@ async def plugin_install(
                 plugin_id
             )
 
-    except Exception as e:
+    except Exception as exc:
         await event.reply(
-            f"❌ دریافت پلاگین ناموفق بود.\n`{e}`"
+            "❌ دریافت پلاگین ناموفق بود.\n"
+            f"`{exc}`"
         )
         return
 
     await event.reply(
         f"✅ پلاگین «{plugin.name}» "
         f"v{plugin.version} "
-        f"در runtime نصب و فعال شد."
+        "در runtime نصب و فعال شد."
     )
 
 
 @command(
     name="پلاگین آپدیت",
     permission="owner",
-    chat_type="all",
-    description="🔄 یک پلاگین را در runtime به‌روزرسانی می‌کند.",
+    chat_type="private",
+    description=(
+        "🔄 یک پلاگین را در runtime "
+        "به‌روزرسانی می‌کند."
+    ),
 )
 async def plugin_update(
     self: "SystemPlugin",
@@ -581,65 +446,15 @@ async def plugin_update(
                 plugin_id
             )
 
-    except Exception as e:
+    except Exception as exc:
         await event.reply(
-            f"❌ بروزرسانی پلاگین ناموفق بود.\n`{e}`"
+            "❌ بروزرسانی پلاگین ناموفق بود.\n"
+            f"`{exc}`"
         )
         return
 
     await event.reply(
         f"✅ پلاگین «{plugin.name}» "
         f"به v{plugin.version} "
-        f"در runtime بروزرسانی شد."
-    )
-
-
-@on_event(events.NewMessage(incoming=True))
-async def on_message(
-    self: "SystemPlugin",
-    event: events.NewMessage.Event,
-) -> None:
-
-    if not event.is_group:
-        return
-
-
-    text = event.raw_text or ""
-
-    if not _is_admin_list_shortcut(text):
-        return
-    
-    
-    chat = await event.get_chat()
-
-    try:
-        admins = await get_admins(
-            self.client,
-            chat,
-            force_refresh=True,
-        )
-
-    except Exception:
-        print(
-            "❌ خطا در دریافت ادمین‌ها برای shortcut:"
-        )
-        import traceback
-        traceback.print_exc()
-        return
-
-    if not any(
-        admin.user_id == event.sender_id
-        for admin in admins
-    ):
-        return
-
-    if admins is None:
-        print("get_admins returned None")
-        return
-
-
-    await _send_admin_list(
-        self,
-        event,
-        admins,
+        "در runtime بروزرسانی شد."
     )

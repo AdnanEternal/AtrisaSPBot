@@ -1,23 +1,15 @@
-from . import handlers
-
 import asyncio
 
 from core.base_plugin import BasePlugin
 
+from . import handlers
+
 
 class SystemPlugin(BasePlugin):
     """
-    پلاگین سیستمی: خونه‌ی کامندها و قابلیت‌های مدیریتیِ خودِ ربات (نه یه
-    قابلیت کاربرمحور مثل فیلتر محتوا). الان فقط !راهنما رو داره، ولی
-    قراره بعداً کارهای دیگه‌ای مثل فعال/غیرفعال کردن سایر پلاگین‌ها هم
-    بهش اضافه بشه؛ برای همین به‌جای handlers.py تک‌فایلی، بعداً می‌تونی
-    هر دسته‌کار رو تو فایل جدا بنویسی (مثلاً plugins_control.py) و همون‌جا
-    به کلاس وصلش کنی، دقیقاً مثل show_help پایین.
+    پلاگین سیستمی آتریسا.
 
-    از نگاه core این پلاگین هیچ فرقی با بقیه‌ی پلاگین‌ها نداره؛ فقط از
-    قابلیت‌های عمومیِ خودِ core (مثل command_manager.get_all_commands())
-    استفاده می‌کنه. یعنی اگه غیرفعال یا حذف بشه، بقیه‌ی ربات دقیقاً مثل
-    قبل کار می‌کنه.
+    تمام commandهای این پلاگین فقط از PV قابل استفاده هستند.
     """
 
     def __init__(
@@ -47,5 +39,3 @@ class SystemPlugin(BasePlugin):
     plugin_update_check = handlers.plugin_update_check
     plugin_install = handlers.plugin_install
     plugin_update = handlers.plugin_update
-    list_admins = handlers.list_admins
-    on_message = handlers.on_message
