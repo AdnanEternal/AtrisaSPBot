@@ -5,7 +5,6 @@ from splusthon import events
 from splusthon.errors import (
     FloodWaitError,
     RPCError,
-    UserAlreadyParticipantError,
 )
 
 from splusthon.tl.functions.messages import (
@@ -73,12 +72,6 @@ async def on_message(
             )
         )
 
-    except UserAlreadyParticipantError:
-        await event.reply(
-            "ℹ️ آتریسا از قبل عضو این گروه است."
-        )
-        return
-
     except FloodWaitError as exc:
         seconds = getattr(
             exc,
@@ -101,6 +94,14 @@ async def on_message(
         return
 
     except RPCError as exc:
+        error_text = str(exc).upper()
+
+        if "USER_ALREADY_JOINED" in error_text:
+            await event.reply(
+                "ℹ️ آتریسا از قبل عضو این گروه است."
+            )
+            return
+
         print(
             "❌ Group Joiner RPC error: "
             f"{type(exc).__name__}: {exc}"
