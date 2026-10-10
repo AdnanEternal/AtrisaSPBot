@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from splusthon import SoroushClient, events
 from splusthon.events import StopPropagation
+from splusthon.tl import types
 
 from core.permissions import is_chat_admin, is_owner
 
@@ -452,7 +453,7 @@ class CommandManager:
             self.prefix
         )
 
-        # =========================================================
+    # =========================================================
     # COMMAND EXECUTION
     # =========================================================
 
@@ -466,15 +467,40 @@ class CommandManager:
         if command is None:
             return False
 
+        sender_id = event.sender_id
+        owner_user = is_owner(sender_id)
+
         # -------------------------------------------------
         # CHAT TYPE
         # -------------------------------------------------
 
-        if (
+        chat = None
+
+        # کامندهای گروهی در گروه و کانال مجاز هستند.
+        # برای مجوز admin نیز فقط گروه و کانال معتبرند.
+        needs_chat_context = (
             command.chat_type == "group"
-            and not event.is_group
-        ):
-            return False
+            or (
+                command.permission == "admin"
+                and not owner_user
+            )
+        )
+
+        if needs_chat_context:
+            try:
+                chat = await event.get_chat()
+
+            except Exception:
+                return False
+
+            if not isinstance(
+                chat,
+                (
+                    types.Chat,
+                    types.Channel,
+                ),
+            ):
+                return False
 
         if (
             command.chat_type == "private"
@@ -486,22 +512,23 @@ class CommandManager:
         # PERMISSION
         # -------------------------------------------------
 
-        sender_id = event.sender_id
+        # مالک برای بررسی permission نیازی به بررسی ادمین
+        # یا مالک بودن دوباره ندارد.
+        if not owner_user:
 
-        if command.permission == "admin":
+            if command.permission == "admin":
 
-            chat = await event.get_chat()
+                # اینجا chat قبلاً بررسی شده و باید گروه
+                # یا کانال باشد.
+                if not await is_chat_admin(
+                    self._client,
+                    chat,
+                    sender_id,
+                ):
+                    return False
 
-            if not await is_chat_admin(
-                self._client,
-                chat,
-                sender_id,
-            ):
-                return False
+            elif command.permission == "owner":
 
-        elif command.permission == "owner":
-
-            if not is_owner(sender_id):
                 return False
 
         # -------------------------------------------------

@@ -275,19 +275,63 @@ async def show_help(
     self: "SystemPlugin",
     event: events.NewMessage.Event,
 ) -> None:
+
     sender_id = event.sender_id
     is_owner_user = is_owner(sender_id)
 
-    # داخل گروه بررسی می‌کنیم کاربر ادمین هست یا نه.
     is_admin_user = False
 
-    if event.is_group:
-        chat = await event.get_chat()
-        is_admin_user = await is_chat_admin(
-            self.client,
+    # مالک نیازی به بررسی ادمین ندارد.
+    # کاربران عادی فقط در گروه و کانال بررسی می‌شوند.
+    if (
+        not is_owner_user
+        and not event.is_private
+    ):
+        try:
+            chat = await event.get_chat()
+
+        except Exception:
+            chat = None
+
+        if isinstance(
             chat,
-            sender_id,
-        )
+            (
+                types.Chat,
+                types.Channel,
+            ),
+        ):
+            is_admin_user = await is_chat_admin(
+                self.client,
+                chat,
+                sender_id,
+            )
+
+    # -------------------------------------------------
+    # ALLOWED PERMISSIONS
+    # -------------------------------------------------
+
+    if is_owner_user:
+
+        allowed_permissions = {
+            "everyone",
+            "admin",
+            "owner",
+        }
+
+    elif is_admin_user:
+
+        allowed_permissions = {
+            "everyone",
+            "admin",
+        }
+
+    else:
+
+        # کاربر عادی در دایرکت، گروه یا کانال
+        # فقط کامندهای عمومی را می‌بیند.
+        allowed_permissions = {
+            "everyone",
+        }
 
     # تعیین می‌کنیم چه سطح دسترسی‌هایی قابل نمایش باشند.
     if is_owner_user:
@@ -747,19 +791,26 @@ async def on_message(
     event: events.NewMessage.Event,
 ) -> None:
 
-    if not event.is_group:
+    if event.is_private:
         return
-
 
     text = event.raw_text or ""
 
     if not _is_admin_list_shortcut(text):
         return
-    
-    
-    chat = await event.get_chat()
 
     try:
+        chat = await event.get_chat()
+
+        if not isinstance(
+            chat,
+            (
+                types.Chat,
+                types.Channel,
+            ),
+        ):
+            return
+
         admins = await get_admins(
             self.client,
             chat,
