@@ -1,0 +1,88 @@
+import random
+
+from typing import TYPE_CHECKING
+
+from splusthon import events
+
+from core.decorators import command, on_event
+
+if TYPE_CHECKING:
+    from .plugin import MessageManagerPlugin
+
+MAX_CLEAR_COUNT = 1000
+
+
+@command(
+    "پاکسازی",
+    permission="admin",
+    chat_type="group",
+    description="🧹 پاکسازی دسته‌جمعی پیام‌های اخیر",
+    native_name="clear",
+)
+async def clear_messages(
+    self: "MessageManagerPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    if not event.args:
+        await event.reply(
+            "مثال: "
+            + self.command_usage(
+                event.command,
+                "20",
+                event=event,
+            )
+        )
+        return
+
+    count_text = event.args[0]
+
+    if not count_text.isdigit():
+        await event.reply("❌ تعداد پیام‌ها باید یک عدد باشد.")
+        return
+
+    count = int(count_text)
+
+    if count <= 0:
+        await event.reply("❌ تعداد پیام‌ها باید بیشتر از صفر باشد.")
+        return
+    
+    if count > MAX_CLEAR_COUNT:
+        await event.reply(
+            f"❌ حداکثر تعداد پاکسازی در هر بار {MAX_CLEAR_COUNT} پیام است."
+        )
+        return
+
+    chat = await event.get_chat()
+
+    messages = await self.client.get_messages(
+        chat,
+        limit=count + 1,
+    )
+
+    message_ids = [
+        message.id
+        for message in messages
+        if message.id != event.id
+    ]
+
+    if not message_ids:
+        await event.reply("❌ پیامی برای پاکسازی پیدا نشد.")
+        return
+
+    await self.client.delete_messages(
+        chat,
+        message_ids,
+    )
+
+    for message_id in message_ids:
+        await self.event_bus.emit(
+            "timeline_deletion",
+            event=event,
+            group_id=event.chat_id,
+            message_id=message_id,
+            source="clear_command",
+            reason="admin_cleanup",
+        )
+
+    await event.delete()
+
