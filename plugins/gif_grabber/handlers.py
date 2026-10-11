@@ -12,8 +12,9 @@ if TYPE_CHECKING:
     from .plugin import GifGrabberPlugin
 
 
-MAX_GIFS_PER_COMMAND = 100
-
+MAX_GIFS_PER_COMMAND = 200
+# حداکثر تعداد درخواست‌های حذف هم‌زمان
+GIF_DELETE_CONCURRENCY = 5
 
 
 
@@ -25,10 +26,15 @@ MAX_GIFS_PER_COMMAND = 100
     description="گیف‌های Saved GIFs را حذف می‌کند.",
     native_name="clear_saved_gifs",
 )
+
 async def clear_saved_gifs(
     self: "GifGrabberPlugin",
     event: events.NewMessage.Event,
 ) -> None:
+    import asyncio
+
+    concurrency = max(1, int(GIF_DELETE_CONCURRENCY))
+
     # دریافت فهرست گیف‌های ذخیره‌شده
     try:
         response = await self.client(
@@ -59,19 +65,20 @@ async def clear_saved_gifs(
     total_count = len(gifs)
     removed_count = 0
     failed_count = 0
+    attempted_count = 0
     stopped_reason = None
 
     await event.reply(
         "🧹 شروع پاکسازی Saved GIFs...\n"
-        f"🎯 تعداد گیف‌های دریافتی: {total_count}"
+        f"🎯 تعداد گیف‌ها: {total_count}\n"
+        f"⚡ درخواست هم‌زمان: {concurrency}"
     )
 
-    for gif in gifs:
+    async def remove_gif(gif):
         document_id = getattr(gif, "id", None)
 
         if document_id is None:
-            failed_count += 1
-            continue
+            return "failed", "شناسهٔ گیف موجود نیست"
 
         try:
             await self.client(
@@ -80,47 +87,97 @@ async def clear_saved_gifs(
                     unsave=True,
                 )
             )
-            removed_count += 1
+            return "success", document_id
 
         except FloodWaitError as exc:
-            failed_count += 1
-            wait_seconds = getattr(exc, "seconds", None)
-
-            stopped_reason = (
-                "محدودیت درخواست‌های سرور"
-                + (
-                    f"؛ زمان انتظار: {wait_seconds} ثانیه"
-                    if wait_seconds is not None
-                    else ""
-                )
+            return "flood", (
+                document_id,
+                getattr(exc, "seconds", None),
+                str(exc),
             )
-
-            print(
-                "⚠️ GIF Grabber - "
-                f"FloodWait هنگام حذف گیف {document_id}: {exc}"
-            )
-            break
 
         except Exception as exc:
-            failed_count += 1
-            print(
-                "❌ GIF Grabber - "
-                f"حذف گیف {document_id} ناموفق بود: {exc}"
+            return "failed", (
+                document_id,
+                str(exc),
             )
 
+    # اجرای دسته‌های محدود؛ در هر دسته حداکثر
+    # concurrency درخواست حذف اجرا می‌شود.
+    for start in range(0, total_count, concurrency):
+        batch = gifs[start:start + concurrency]
+
+        results = await asyncio.gather(
+            *(remove_gif(gif) for gif in batch)
+        )
+
+        attempted_count += len(batch)
+
+        flood_detected = False
+
+        for status, details in results:
+            if status == "success":
+                removed_count += 1
+                continue
+
+            failed_count += 1
+
+            if status == "flood":
+                flood_detected = True
+                document_id, wait_seconds, error_text = details
+
+                stopped_reason = (
+                    "محدودیت درخواست‌های سرور"
+                    + (
+                        f"؛ زمان انتظار اعلام‌شده: "
+                        f"{wait_seconds} ثانیه"
+                        if wait_seconds is not None
+                        else ""
+                    )
+                )
+
+                print(
+                    "⚠️ GIF Grabber - "
+                    f"FloodWait هنگام حذف گیف "
+                    f"{document_id}: {error_text}"
+                )
+            else:
+                if isinstance(details, tuple):
+                    document_id, error_text = details
+                else:
+                    document_id = "نامشخص"
+                    error_text = details
+
+                print(
+                    "❌ GIF Grabber - "
+                    f"حذف گیف {document_id} ناموفق بود: "
+                    f"{error_text}"
+                )
+
+        # درخواست‌های دستهٔ جاری تمام شده‌اند؛
+        # در صورت FloodWait دستهٔ بعدی را شروع نکن.
+        if flood_detected:
+            break
+
+    skipped_count = total_count - attempted_count
+
     result_lines = [
-        "🧹 پاکسازی Saved GIFs تمام شد.",
-        f"📋 گیف‌های موجود در فهرست: {total_count}",
-        f"✅ درخواست‌های حذف موفق: {removed_count}",
-        f"❌ حذف‌های ناموفق: {failed_count}",
+        "🧹 گزارش پاکسازی Saved GIFs",
+        f"📋 تعداد اولیه: {total_count}",
+        f"⚡ سقف درخواست هم‌زمان: {concurrency}",
+        f"📨 گیف‌های بررسی‌شده: {attempted_count}",
+        f"✅ حذف موفق: {removed_count}",
+        f"❌ حذف ناموفق: {failed_count}",
+        f"⏭️ بررسی‌نشده: {skipped_count}",
     ]
 
     if stopped_reason:
         result_lines.append(
-            f"⚠️ علت توقف زودهنگام: {stopped_reason}"
+            f"⚠️ پاکسازی متوقف شد: {stopped_reason}"
         )
 
     await event.reply("\n".join(result_lines))
+
 
 
 
