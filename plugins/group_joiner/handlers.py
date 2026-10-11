@@ -1,3 +1,4 @@
+
 import re
 from typing import TYPE_CHECKING
 
@@ -7,9 +8,11 @@ from splusthon.errors import (
     FloodWaitError,
     RPCError,
 )
-
 from splusthon.tl.functions.messages import (
     ImportChatInviteRequest,
+)
+from splusthon.tl.functions.channels import (
+    JoinChannelRequest,
 )
 
 from core.decorators import on_event
@@ -20,26 +23,42 @@ if TYPE_CHECKING:
     from .plugin import GroupJoinerPlugin
 
 
-# فعلاً فقط لینک دعوت خصوصی گروه‌های سروش‌پلاس.
+# لینک دعوت خصوصی:
+# https://splus.ir/joingroup/INVITE_HASH
 _INVITE_LINK_RE = re.compile(
     r"(?:https?://)?(?:www\.)?"
-    r"splus\.ir/joingroup/"
+    r"splus\.ir/joingroup/([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+
+# لینک عمومی گروه یا کانال:
+# https://splus.ir/USERNAME
+# مسیر joingroup عمداً از این الگو مستثنا شده است.
+_PUBLIC_LINK_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?"
+    r"splus\.ir/"
+    r"(?!joingroup(?:/|[?#\s]|$))"
     r"([A-Za-z0-9_-]+)",
     re.IGNORECASE,
 )
 
 
-def _extract_invite_hash(
+def _extract_join_target(
     text: str,
-) -> str | None:
-    match = _INVITE_LINK_RE.search(
-        text or ""
-    )
+) -> tuple[str, str] | None:
+    text = text or ""
 
-    if match is None:
-        return None
+    invite_match = _INVITE_LINK_RE.search(text)
 
-    return match.group(1)
+    if invite_match is not None:
+        return "invite", invite_match.group(1)
+
+    public_match = _PUBLIC_LINK_RE.search(text)
+
+    if public_match is not None:
+        return "public", public_match.group(1)
+
+    return None
 
 
 @on_event(events.NewMessage(incoming=True))
@@ -47,66 +66,74 @@ async def on_message(
     self: "GroupJoinerPlugin",
     event: events.NewMessage.Event,
 ) -> None:
-    # فقط PV
+    # فقط دایرکت
     if not event.is_private:
         return
 
-    # فقط Owner
+    # فقط مالک ربات
     if not is_owner(event.sender_id):
         return
 
-    text = (
-        event.raw_text or ""
-    ).strip()
+    text = (event.raw_text or "").strip()
 
-    invite_hash = _extract_invite_hash(
-        text
-    )
+    target = _extract_join_target(text)
 
-    if invite_hash is None:
+    if target is None:
         return
 
+    target_type, target_value = target
+
+    # لینک دعوت خصوصی و لینک عمومی دو API متفاوت دارند.
+    if target_type == "invite":
+        request = ImportChatInviteRequest(target_value)
+        link_description = "لینک دعوت"
+    else:
+        request = JoinChannelRequest(target_value)
+        link_description = "لینک عمومی"
+
     try:
-        await self.client(
-            ImportChatInviteRequest(
-                invite_hash
-            )
-        )
+        await self.client(request)
 
     except FloodWaitError as exc:
-        seconds = getattr(
-            exc,
-            "seconds",
-            None,
+        seconds = getattr(exc, "seconds", None)
+
+        message = (
+            "⏳ سروش‌پلاس موقتاً درخواست‌های عضویت "
+            "را محدود کرده است."
         )
 
         if seconds is not None:
-            await event.reply(
-                "⏳ سروش‌پلاس موقتاً درخواست‌های "
-                f"ورود را محدود کرده است.\n"
-                f"زمان انتظار: {seconds} ثانیه"
-            )
-        else:
-            await event.reply(
-                "⏳ سروش‌پلاس موقتاً درخواست‌های "
-                "ورود را محدود کرده است."
-            )
+            message += f"\nزمان انتظار: {seconds} ثانیه"
 
+        await event.reply(message)
         return
-    
+
     except ChannelPrivateError:
         await event.reply(
-            "❌ آتریسا نمی‌تواند وارد این گروه شود.\n"
-            "🔒 احتمالاً گروه خصوصی است یا آتریسا از آن بن شده است."
+            "❌ آتریسا نتوانست وارد این گروه یا کانال شود.\n"
+            "🔒 ممکن است مقصد خصوصی باشد، لینک معتبر نباشد "
+            "یا دسترسی آتریسا محدود شده باشد."
         )
         return
-    
-    except RPCError as exc:
-        error_text = str(exc).upper()
 
-        if "USER_ALREADY_JOINED" in error_text:
+    except RPCError as exc:
+        error_details = (
+            f"{type(exc).__name__} {exc}"
+        ).upper()
+
+        if (
+            "USER_ALREADY_JOINED" in error_details
+            or "USER_ALREADY_PARTICIPANT" in error_details
+        ):
             await event.reply(
-                "ℹ️ آتریسا از قبل عضو این گروه است."
+                "ℹ️ آتریسا از قبل عضو این گروه یا کانال است."
+            )
+            return
+
+        if "INVITE_REQUEST_SENT" in error_details:
+            await event.reply(
+                "⏳ درخواست عضویت ارسال شد و در انتظار "
+                "تأیید مدیر گروه یا کانال است."
             )
             return
 
@@ -116,7 +143,8 @@ async def on_message(
         )
 
         await event.reply(
-            "❌ ورود به گروه ناموفق بود.\n"
+            "❌ ورود به گروه یا کانال ناموفق بود.\n"
+            f"نوع لینک: {link_description}\n"
             f"خطا: `{type(exc).__name__}`"
         )
         return
@@ -128,11 +156,11 @@ async def on_message(
         )
 
         await event.reply(
-            "❌ هنگام ورود به گروه خطای "
-            "غیرمنتظره‌ای رخ داد."
+            "❌ هنگام ورود به گروه یا کانال، "
+            "خطای غیرمنتظره‌ای رخ داد."
         )
         return
 
     await event.reply(
-        "✅ آتریسا با موفقیت وارد گروه شد."
+        "✅ آتریسا با موفقیت وارد گروه یا کانال شد."
     )
