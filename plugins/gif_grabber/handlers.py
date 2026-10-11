@@ -296,16 +296,79 @@ async def fetch_gifs(
     seen_document_ids = set()
     stopped_reason = None
 
+
     # --------------------------------------------------
-    # Scan channel history, newest to oldest
+    # Scan GIF history page by page, newest to oldest
+    # Keep the server-side GIF filter enabled.
     # --------------------------------------------------
 
-    try:
-        async for message in self.client.iter_messages(
-            channel,
-            limit=None,
-            filter=types.InputMessagesFilterGif(),
-        ):
+    import asyncio
+
+    PAGE_SIZE = 100
+    offset_id = 0
+    stop_requested = False
+
+    while saved_count < target_count:
+        page = []
+
+        try:
+            async for message in self.client.iter_messages(
+                channel,
+                limit=PAGE_SIZE,
+                offset_id=offset_id,
+                filter=types.InputMessagesFilterGif(),
+            ):
+                page.append(message)
+
+        except FloodWaitError as exc:
+            wait_seconds = getattr(exc, "seconds", None)
+
+            stopped_reason = (
+                "محدودیت درخواست هنگام دریافت صفحهٔ بعدی"
+                + (
+                    f"؛ زمان انتظار: {wait_seconds} ثانیه"
+                    if wait_seconds is not None
+                    else ""
+                )
+            )
+
+            print(
+                "⚠️ GIF Grabber - "
+                f"FloodWait هنگام پیمایش تاریخچه: {exc}"
+            )
+            break
+
+        except Exception as exc:
+            stopped_reason = (
+                f"خطا هنگام دریافت صفحهٔ تاریخچه: {exc}"
+            )
+
+            print(
+                "❌ GIF Grabber - "
+                f"دریافت صفحهٔ تاریخچه ناموفق بود: {exc}"
+            )
+            break
+
+        # هیچ نتیجهٔ دیگری باقی نمانده است.
+        if not page:
+            break
+
+        # در حالت پیش‌فرض، پیام‌ها از جدید به قدیم هستند.
+        # شناسهٔ آخرین پیام، نقطهٔ شروع صفحهٔ بعدی است.
+        next_offset_id = page[-1].id
+
+        # جلوگیری از حلقهٔ بی‌نهایت در صورت تکرار صفحه.
+        if offset_id and next_offset_id >= offset_id:
+            stopped_reason = (
+                "شناسهٔ صفحهٔ بعدی پیشروی نکرد؛ "
+                "برای جلوگیری از حلقهٔ تکراری متوقف شد."
+            )
+            print(f"⚠️ GIF Grabber - {stopped_reason}")
+            break
+
+        offset_id = next_offset_id
+
+        for message in page:
             scanned_count += 1
 
             gif = message.gif
@@ -313,22 +376,17 @@ async def fetch_gifs(
             if gif is None:
                 continue
 
-            document_id = getattr(
-                gif,
-                "id",
-                None,
-            )
+            document_id = getattr(gif, "id", None)
 
             if document_id is None:
                 continue
 
-            # یک سند ممکن است در چند پیام تکرار شده باشد.
+            # جلوگیری از ذخیرهٔ تکراری یک سند
             if document_id in seen_document_ids:
                 continue
 
             seen_document_ids.add(document_id)
 
-            # ذخیره در Saved GIFs واقعی حساب
             try:
                 await self.client(
                     SaveGifRequest(
@@ -340,17 +398,12 @@ async def fetch_gifs(
             except FloodWaitError as exc:
                 failed_count += 1
 
-                wait_seconds = getattr(
-                    exc,
-                    "seconds",
-                    None,
-                )
+                wait_seconds = getattr(exc, "seconds", None)
 
                 stopped_reason = (
-                    "محدودیت تعداد درخواست‌های سرور"
+                    "محدودیت درخواست هنگام ذخیرهٔ گیف"
                     + (
-                        f"؛ زمان انتظار اعلام‌شده: "
-                        f"{wait_seconds} ثانیه"
+                        f"؛ زمان انتظار: {wait_seconds} ثانیه"
                         if wait_seconds is not None
                         else ""
                     )
@@ -358,8 +411,11 @@ async def fetch_gifs(
 
                 print(
                     "⚠️ GIF Grabber - "
-                    f"FloodWait هنگام ذخیرهٔ گیف: {exc}"
+                    f"FloodWait هنگام ذخیرهٔ گیف "
+                    f"{document_id}: {exc}"
                 )
+
+                stop_requested = True
                 break
 
             except Exception as exc:
@@ -381,17 +437,14 @@ async def fetch_gifs(
             )
 
             if saved_count >= target_count:
+                stop_requested = True
                 break
 
-    except Exception as exc:
-        stopped_reason = (
-            f"خطا هنگام پیمایش تاریخچهٔ کانال: {exc}"
-        )
+        if stop_requested:
+            break
 
-        print(
-            "❌ GIF Grabber - "
-            f"پیمایش کانال ناموفق شد: {exc}"
-        )
+        # فاصلهٔ کوتاه بین درخواست صفحه‌های تاریخچه
+        await asyncio.sleep(1)
 
     # --------------------------------------------------
     # Final report
