@@ -136,6 +136,7 @@ async def fetch_gifs(
         async for message in self.client.iter_messages(
             channel,
             limit=None,
+            filter=types.InputMessagesFilterGif(),
         ):
             scanned_count += 1
 
