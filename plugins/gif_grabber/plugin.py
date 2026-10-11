@@ -25,3 +25,4 @@ class GifGrabberPlugin(BasePlugin):
 
     on_message = handlers.on_message
     fetch_gifs = handlers.fetch_gifs
+    clear_saved_gifs = handlers.clear_saved_gifs

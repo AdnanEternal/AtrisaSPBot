@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 
 from splusthon import events
-from splusthon.tl.functions.messages import SaveGifRequest
+from splusthon.tl.functions.messages import SaveGifRequest,GetSavedGifsRequest
 from splusthon.tl import types
 from splusthon.errors import FloodWaitError
 
@@ -13,6 +13,117 @@ if TYPE_CHECKING:
 
 
 MAX_GIFS_PER_COMMAND = 100
+
+
+
+
+
+@command(
+    name="پاکسازی_گیف",
+    permission="owner",
+    chat_type="all",
+    description="گیف‌های Saved GIFs را حذف می‌کند.",
+    native_name="clear_saved_gifs",
+)
+async def clear_saved_gifs(
+    self: "GifGrabberPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    # دریافت فهرست گیف‌های ذخیره‌شده
+    try:
+        response = await self.client(
+            GetSavedGifsRequest(hash=0)
+        )
+    except Exception as exc:
+        await event.reply(
+            "❌ دریافت فهرست Saved GIFs ناموفق بود.\n"
+            f"جزئیات: {exc}"
+        )
+        return
+
+    gifs = getattr(response, "gifs", None)
+
+    if gifs is None:
+        await event.reply(
+            "❌ پاسخ سرور شامل فهرست گیف‌ها نبود؛ "
+            "هیچ گیفی حذف نشد."
+        )
+        return
+
+    if not gifs:
+        await event.reply(
+            "ℹ️ فهرست Saved GIFs خالی است."
+        )
+        return
+
+    total_count = len(gifs)
+    removed_count = 0
+    failed_count = 0
+    stopped_reason = None
+
+    await event.reply(
+        "🧹 شروع پاکسازی Saved GIFs...\n"
+        f"🎯 تعداد گیف‌های دریافتی: {total_count}"
+    )
+
+    for gif in gifs:
+        document_id = getattr(gif, "id", None)
+
+        if document_id is None:
+            failed_count += 1
+            continue
+
+        try:
+            await self.client(
+                SaveGifRequest(
+                    id=gif,
+                    unsave=True,
+                )
+            )
+            removed_count += 1
+
+        except FloodWaitError as exc:
+            failed_count += 1
+            wait_seconds = getattr(exc, "seconds", None)
+
+            stopped_reason = (
+                "محدودیت درخواست‌های سرور"
+                + (
+                    f"؛ زمان انتظار: {wait_seconds} ثانیه"
+                    if wait_seconds is not None
+                    else ""
+                )
+            )
+
+            print(
+                "⚠️ GIF Grabber - "
+                f"FloodWait هنگام حذف گیف {document_id}: {exc}"
+            )
+            break
+
+        except Exception as exc:
+            failed_count += 1
+            print(
+                "❌ GIF Grabber - "
+                f"حذف گیف {document_id} ناموفق بود: {exc}"
+            )
+
+    result_lines = [
+        "🧹 پاکسازی Saved GIFs تمام شد.",
+        f"📋 گیف‌های موجود در فهرست: {total_count}",
+        f"✅ درخواست‌های حذف موفق: {removed_count}",
+        f"❌ حذف‌های ناموفق: {failed_count}",
+    ]
+
+    if stopped_reason:
+        result_lines.append(
+            f"⚠️ علت توقف زودهنگام: {stopped_reason}"
+        )
+
+    await event.reply("\n".join(result_lines))
+
+
+
 
 
 @command(
