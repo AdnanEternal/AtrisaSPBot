@@ -20,7 +20,6 @@ class GifGrabberPlugin(BasePlugin):
             db,
             event_bus,
         )
-
         self.last_gif = None
         self.last_gif_message = None
 

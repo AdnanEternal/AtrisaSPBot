@@ -1,13 +1,33 @@
 from typing import TYPE_CHECKING
 
 from splusthon import events
-from splusthon.tl.functions.messages import SaveGifRequest
+from splusthon.tl.functions.messages import (
+    SaveGifRequest,
+    GetSavedGifsRequest
+)
 
-from core.decorators import on_event
+from core.decorators import command, on_event
 
 
 if TYPE_CHECKING:
     from .plugin import GifGrabberPlugin
+
+
+
+
+
+
+async def get_saved_gifs(client) -> list:
+    result = await client(
+        GetSavedGifsRequest(hash=0)
+    )
+
+    return list(
+        getattr(result, "gifs", None) or []
+    )
+
+
+
 
 
 @on_event(events.NewMessage(incoming=True))
@@ -43,4 +63,5 @@ async def on_message(
         )
         return
 
-    print("✅ GIF Grabber - گیف به Saved GIFs اضافه شد.")
+    # print("✅ GIF Grabber - گیف به Saved GIFs اضافه شد.")
+    print(event)
