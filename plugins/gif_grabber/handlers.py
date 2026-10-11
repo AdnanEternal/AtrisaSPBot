@@ -15,7 +15,12 @@ async def on_message(
     self: "GifGrabberPlugin",
     event: events.NewMessage.Event,
 ) -> None:
-    if event.is_group is not True:
+    
+
+    if (
+        event.is_group is not True
+        and event.is_channel is not True
+    ):
         return
 
     gif = event.message.gif
