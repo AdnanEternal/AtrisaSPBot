@@ -1,23 +1,27 @@
-from typing import TYPE_CHECKING
+from core.base_plugin import BasePlugin
 
-from splusthon import events
-
-if TYPE_CHECKING:
-    from .plugin import GifGrabberPlugin
+from . import handlers
 
 
-class GifGrabberPlugin:
-    def __init__(self, client):
-        self.client = client
+class GifGrabberPlugin(BasePlugin):
+    name = "GIF Grabber"
+    version = "0.1.0"
+
+    def __init__(
+        self,
+        client,
+        command_manager,
+        db,
+        event_bus,
+    ):
+        super().__init__(
+            client,
+            command_manager,
+            db,
+            event_bus,
+        )
+
         self.last_gif = None
+        self.last_gif_message = None
 
-    async def on_message(self, event: events.NewMessage.Event):
-        message = event.message
-
-        if not getattr(message, "gif", None):
-            return
-
-        self.last_gif = {
-            "chat_id": event.chat_id,
-            "message_id": message.id,
-        }
+    on_message = handlers.on_message
