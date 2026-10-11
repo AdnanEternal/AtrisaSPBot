@@ -1,10 +1,7 @@
 from typing import TYPE_CHECKING
 
 from splusthon import events
-from splusthon.tl.functions.messages import (
-    SaveGifRequest,
-    GetSavedGifsRequest
-)
+from splusthon.tl.functions.messages import SaveGifRequest
 from splusthon.tl import types
 from splusthon.errors import FloodWaitError
 
@@ -13,7 +10,6 @@ from core.decorators import command, on_event
 
 if TYPE_CHECKING:
     from .plugin import GifGrabberPlugin
-
 
 
 MAX_GIFS_PER_COMMAND = 100
@@ -64,24 +60,59 @@ async def fetch_gifs(
         MAX_GIFS_PER_COMMAND,
     )
 
+
     # --------------------------------------------------
-    # Resolve channel
+    # Resolve chat from dialogs
     # --------------------------------------------------
 
     try:
-        channel = await self.client.get_entity(
-            channel_id
+        dialogs = await self.client.get_dialogs()
+
+        target_dialog = next(
+            (
+                dialog
+                for dialog in dialogs
+                if dialog.id == channel_id
+            ),
+            None,
         )
+
+        # بعضی شناسه‌ها ممکن است با قالب متفاوت وارد شوند.
+        # اگر تطبیق مستقیم انجام نشد، مقدار مثبت را هم بررسی می‌کنیم.
+        if target_dialog is None and channel_id > 0:
+            target_dialog = next(
+                (
+                    dialog
+                    for dialog in dialogs
+                    if abs(dialog.id) == channel_id
+                ),
+                None,
+            )
+
+        if target_dialog is None:
+            await event.reply(
+                "❌ این شناسه در گفت‌وگوهای قابل‌دسترسی "
+                "اتریسا پیدا نشد.\n"
+                "مطمئن شو اتریسا قبلاً به گروه یا کانال "
+                "دسترسی داشته است."
+            )
+            return
+
+        if not (
+            target_dialog.is_group
+            or target_dialog.is_channel
+        ):
+            await event.reply(
+                "❌ این شناسه متعلق به گروه یا کانال نیست."
+            )
+            return
+
+        channel = target_dialog.entity
+
     except Exception as exc:
         await event.reply(
-            "❌ نتوانستم کانال را با این شناسه پیدا کنم.\n"
+            "❌ دریافت فهرست گفت‌وگوها ناموفق بود.\n"
             f"جزئیات: {exc}"
-        )
-        return
-
-    if not isinstance(channel, types.Channel):
-        await event.reply(
-            "❌ شناسهٔ واردشده به یک کانال معتبر اشاره نمی‌کند."
         )
         return
 
@@ -222,23 +253,6 @@ async def fetch_gifs(
         "\n".join(result_lines)
     )
 
-
-
-
-
-async def get_saved_gifs(client) -> list:
-    result = await client(
-        GetSavedGifsRequest(hash=0)
-    )
-
-    return list(
-        getattr(result, "gifs", None) or []
-    )
-
-
-
-
-
 @on_event(events.NewMessage(incoming=True))
 async def on_message(
     self: "GifGrabberPlugin",
@@ -272,5 +286,4 @@ async def on_message(
         )
         return
 
-    # print("✅ GIF Grabber - گیف به Saved GIFs اضافه شد.")
-    print(event)
+    print("✅ GIF Grabber - گیف به Saved GIFs اضافه شد.")
