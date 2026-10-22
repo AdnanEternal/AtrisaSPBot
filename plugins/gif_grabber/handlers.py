@@ -10,7 +10,7 @@ from splusthon.errors import FloodWaitError
 
 from core.decorators import command, on_event
 
-from . import memory
+from . import memory, sender
 
 if TYPE_CHECKING:
     from .plugin import GifGrabberPlugin
@@ -579,41 +579,131 @@ async def fetch_gifs(
     name="ارسال",
     permission="owner",
     chat_type="all",
-    description="گیف‌های تصادفی بانک مرکزی را برای یک UID می‌فرستد.",
+    description="ارسال گیف به کاربر، گروه یا کانال؛ با پشتیبانی از تگ و زمان‌بندی.",
     native_name="send_gifs",
 )
 async def send_gifs(
     self: "GifGrabberPlugin",
     event: events.NewMessage.Event,
 ) -> None:
-    args = getattr(event, "args", [])
+    args_text = getattr(
+        event,
+        "args_text",
+        "",
+    ).strip()
 
-    if len(args) != 2:
+    match = re.fullmatch(
+        r"\s*(\d+)\s+(-?\d+)(?:\s+(.*?))?\s*",
+        args_text,
+        re.DOTALL,
+    )
+
+    if not match:
         await event.reply(
-            "❌ تعداد گیف و UID مقصد را وارد کن.\n"
-            "مثال:\n"
-            + self.command_usage(
-                event.command,
-                "1 <UID>",
-                event=event,
+            "❌ قالب دستور نامعتبر است.\n"
+            "نمونه‌ها:\n"
+            "`!ارسال 50 49245702`\n"
+            "`!ارسال 50 -100123 عاشقانه`\n"
+            '`!ارسال 50 -100123 ["عاشقانه", "کیوت"] 2 ثانیه`\n'
+            "`!ارسال 50 -100123 1 دقیقه`"
+        )
+        return
+
+    requested_count = int(match.group(1))
+    target_id = int(match.group(2))
+    tail = (match.group(3) or "").strip()
+
+    if requested_count <= 0 or target_id == 0:
+        await event.reply(
+            "❌ تعداد باید مثبت باشد و شناسهٔ مقصد نمی‌تواند صفر باشد."
+        )
+        return
+
+    # استخراج فاصلهٔ زمانی از انتهای دستور
+    interval_seconds = 0
+
+    interval_match = re.search(
+        r"(\d+)\s*(ثانیه(?:‌ها|ها| ها)?|دقیقه(?:‌ها|ها| ها)?|دیقه|ساعت|روز)\s*$",
+        tail,
+    )
+
+    if interval_match:
+        interval_value = int(
+            interval_match.group(1)
+        )
+
+        unit = (
+            interval_match.group(2)
+            .replace("\u200c", "")
+            .replace(" ", "")
+        )
+
+        if interval_value <= 0:
+            await event.reply(
+                "❌ فاصلهٔ زمانی باید بیشتر از صفر باشد."
             )
-        )
-        return
+            return
 
-    try:
-        requested_count = int(args[0])
-        target_uid = int(args[1])
-    except (TypeError, ValueError):
-        await event.reply(
-            "❌ تعداد گیف و UID باید عدد باشند."
-        )
-        return
+        if unit.startswith("ثانیه"):
+            multiplier = 1
 
-    if requested_count <= 0 or target_uid <= 0:
-        await event.reply(
-            "❌ تعداد و UID باید بزرگ‌تر از صفر باشند."
-        )
-        return
+        elif unit.startswith("دقیقه") or unit == "دیقه":
+            multiplier = 60
+
+        elif unit == "ساعت":
+            multiplier = 60 * 60
+
+        else:
+            multiplier = 24 * 60 * 60
+
+        interval_seconds = interval_value * multiplier
+
+        # عبارت زمانی از انتهای دستور جدا می‌شود تا باقی‌مانده
+        # برای استخراج تگ‌ها استفاده شود.
+        tail = tail[:interval_match.start()].strip()
+
+    # استخراج تگ‌ها
+    tags = None
+
+    if tail:
+        if tail.startswith("["):
+            try:
+                parsed_tags = ast.literal_eval(tail)
+
+            except (ValueError, SyntaxError):
+                await event.reply(
+                    "❌ فهرست تگ‌ها معتبر نیست.\n"
+                    'مثال: `["عاشقانه", "کیوت"]`'
+                )
+                return
+
+            if (
+                not isinstance(parsed_tags, list)
+                or any(
+                    not isinstance(tag, str)
+                    for tag in parsed_tags
+                )
+            ):
+                await event.reply(
+                    "❌ تگ‌ها باید فهرستی از متن باشند."
+                )
+                return
+
+            tags = list(dict.fromkeys(
+                tag.strip()
+                for tag in parsed_tags
+                if tag.strip()
+            ))
+
+            if not tags:
+                await event.reply(
+                    "❌ فهرست تگ‌ها خالی است."
+                )
+                return
+
+        else:
+            # یک تگ متنی؛ برای چند تگ از فهرست استفاده کن.
+            tags = [tail]
 
     target_count = min(
         requested_count,
@@ -624,102 +714,155 @@ async def send_gifs(
         gifs = await memory.get_random_gifs(
             self.db,
             target_count,
+            tags=tags,
         )
+
     except Exception as exc:
         await event.reply(
             "❌ خواندن بانک مرکزی گیف‌ها ناموفق بود.\n"
-            f"جزئیات: {exc}"
+            f"جزئیات: `{type(exc).__name__}: {exc}`"
         )
         return
 
     if not gifs:
-        await event.reply(
-            "ℹ️ بانک مرکزی گیف‌ها خالی است."
-        )
+        if tags:
+            await event.reply(
+                "ℹ️ گیفی با تمام تگ‌های انتخاب‌شده پیدا نشد.\n"
+                "تگ‌ها باید دقیقاً با تگ‌های ثبت‌شده یکسان باشند."
+            )
+        else:
+            await event.reply(
+                "ℹ️ بانک مرکزی گیف‌ها خالی است."
+            )
         return
 
-    # تشخیص UID خود یوزربات برای ارسال به Saved Messages
+    # تبدیل ردیف‌های دیتابیس به دادهٔ قابل ذخیره در JSON
+    gifs_payload = [
+        {
+            "doc_id": int(gif["doc_id"]),
+            "access_hash": int(gif["access_hash"]),
+        }
+        for gif in gifs
+    ]
+
     try:
-        me = await self.client.get_me()
-        my_uid = getattr(me, "id", None)
+        notify_chat_id = int(
+            getattr(event, "chat_id", 0) or 0
+        )
 
-        if my_uid is None:
-            raise RuntimeError(
-                "شناسهٔ حساب فعلی قابل تشخیص نیست."
-            )
-
-        if int(my_uid) == target_uid:
-            target_peer = "me"
-        else:
-            target_peer = await self.client.get_input_entity(
-                target_uid
-            )
+        job_id = await sender.schedule_send_job(
+            self,
+            target_id=target_id,
+            notify_chat_id=notify_chat_id,
+            gifs=gifs_payload,
+            interval_seconds=interval_seconds,
+        )
 
     except Exception as exc:
         await event.reply(
-            "❌ تشخیص حساب مقصد ناموفق بود.\n"
-            f"جزئیات: {exc}"
+            "❌ ساخت کار ارسال زمان‌بندی‌شده ناموفق بود.\n"
+            f"جزئیات: `{type(exc).__name__}: {exc}`"
         )
         return
 
-    sent_count = 0
-    failed_count = 0
-
-    for gif in gifs:
-        document_id = int(gif["doc_id"])
-        access_hash = int(gif["access_hash"])
-
-        try:
-            input_document = types.InputDocument(
-                id=document_id,
-                access_hash=access_hash,
-                file_reference=b"",
-            )
-
-            await self.client(
-                SendMediaRequest(
-                    peer=target_peer,
-                    media=types.InputMediaDocument(
-                        id=input_document,
-                    ),
-                    message="",
-                )
-            )
-
-            sent_count += 1
-
-            print(
-                "✅ GIF Grabber - گیف ارسال شد: "
-                f"{document_id} → {target_uid}"
-            )
-
-        except Exception as exc:
-            failed_count += 1
-
-            print(
-                "❌ GIF Grabber - ارسال گیف "
-                f"{document_id} به {target_uid} ناموفق بود: "
-                f"{exc}"
-            )
-
-    result_lines = [
-        "📤 عملیات ارسال گیف تمام شد.",
-        f"🎯 UID مقصد: {target_uid}",
-        f"✅ ارسال موفق: {sent_count}",
-        f"❌ ارسال ناموفق: {failed_count}",
+    report_lines = [
+        f"✅ کار ارسال گیف با شناسهٔ `{job_id}` شروع شد.",
+        f"🎯 مقصد: `{target_id}`",
+        f"🎞️ تعداد گیف انتخاب‌شده: {len(gifs_payload)}",
+        (
+            f"⏱️ فاصلهٔ بین ارسال‌ها: هر {interval_seconds} ثانیه"
+            if interval_seconds
+            else "⏱️ فاصلهٔ بین ارسال‌ها: بدون مکث عمدی"
+        ),
+        f"🏷️ تگ‌ها: {', '.join(tags) if tags else 'همهٔ گیف‌ها'}",
+        f"برای لغو این کار: `!توقف_ارسال {job_id}`",
     ]
 
     if requested_count > MAX_SEND_GIFS_PER_COMMAND:
-        result_lines.append(
-            f"ℹ️ سقف هر اجرا "
-            f"{MAX_SEND_GIFS_PER_COMMAND} گیف است."
+        report_lines.append(
+            f"ℹ️ سقف هر اجرا {MAX_SEND_GIFS_PER_COMMAND} گیف است."
         )
 
-    await event.reply("\n".join(result_lines))
+    if len(gifs_payload) < target_count:
+        report_lines.append(
+            "ℹ️ تعداد گیف‌های واجد شرایط کمتر از تعداد درخواستی بود؛ "
+            "تمام گیف‌های موجود در این مجموعه انتخاب شدند."
+        )
+
+    await event.reply(
+        "\n".join(report_lines)
+    )
 
 
+@command(
+    name="توقف_ارسال",
+    permission="owner",
+    chat_type="all",
+    description="توقف یک کار ارسال گیف یا همهٔ کارهای فعال.",
+    native_name="stop_gif_send",
+)
+async def stop_send_gifs(
+    self: "GifGrabberPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    args = getattr(event, "args", [])
 
+    if len(args) > 1:
+        await event.reply(
+            "❌ فقط یک شناسهٔ کار وارد کن.\n"
+            "مثال: `!توقف_ارسال 12`\n"
+            "برای توقف همهٔ ارسال‌ها، `!توقف_ارسال` را بدون آرگومان بفرست."
+        )
+        return
 
+    job_id = None
+
+    if args:
+        try:
+            job_id = int(args[0])
+
+        except (TypeError, ValueError):
+            await event.reply(
+                "❌ شناسهٔ کار باید عدد باشد."
+            )
+            return
+
+        if job_id <= 0:
+            await event.reply(
+                "❌ شناسهٔ کار باید مثبت باشد."
+            )
+            return
+
+    try:
+        stopped_ids = await sender.stop_send_jobs(
+            self,
+            job_id,
+        )
+
+    except Exception as exc:
+        await event.reply(
+            "❌ توقف ارسال ناموفق بود.\n"
+            f"جزئیات: `{type(exc).__name__}: {exc}`"
+        )
+        return
+
+    if not stopped_ids:
+        await event.reply(
+            "ℹ️ کار فعالی با این شناسه پیدا نشد."
+        )
+        return
+
+    if job_id is not None:
+        await event.reply(
+            f"🛑 ارسال گیف با شناسهٔ `{job_id}` متوقف شد."
+        )
+    else:
+        await event.reply(
+            "🛑 همهٔ ارسال‌های فعال متوقف شدند: "
+            + ", ".join(
+                f"`{value}`" for value in stopped_ids
+            )
+        )
 
 
 @on_event(events.NewMessage(incoming=True))
