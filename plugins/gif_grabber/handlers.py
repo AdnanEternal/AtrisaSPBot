@@ -16,11 +16,62 @@ if TYPE_CHECKING:
     from .plugin import GifGrabberPlugin
 
 
-MAX_GIFS_PER_COMMAND = 200
+MAX_GIFS_PER_COMMAND = 2000000
 MAX_SEND_GIFS_PER_COMMAND = 5000
 # حداکثر تعداد درخواست‌های حذف هم‌زمان
 GIF_DELETE_CONCURRENCY = 5
 
+
+@command(
+    name="آمار گیف ها",
+    permission="owner",
+    chat_type="all",
+    description="تعداد کل گیف‌ها و ۱۰ تگ پرتکرار را نمایش می‌دهد.",
+    native_name="gif_stats",
+)
+async def gif_stats(
+    self: "GifGrabberPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    try:
+        total_gifs, top_tags = await memory.get_gif_statistics(
+            self.db,
+            tag_limit=10,
+        )
+
+    except Exception as exc:
+        print(
+            "❌ GIF Grabber - "
+            f"دریافت آمار گیف‌ها ناموفق بود: {exc}"
+        )
+
+        await event.reply(
+            "❌ دریافت آمار گیف‌ها ناموفق بود.\n"
+            f"جزئیات: `{type(exc).__name__}`"
+        )
+        return
+
+    lines = [
+        "📊 آمار بانک مرکزی گیف‌ها",
+        "",
+        f"🎞️ تعداد کل گیف‌ها: {total_gifs:,}",
+        "",
+        "🏷️ ۱۰ تگ پرتکرار:",
+    ]
+
+    if not top_tags:
+        lines.append("هنوز هیچ تگی ثبت نشده است.")
+
+    else:
+        for index, row in enumerate(top_tags, start=1):
+            tag = str(row["tag"]).replace("\n", " ").replace("\r", " ")
+            count = int(row["gif_count"])
+
+            lines.append(
+                f"{index}. {tag} — {count:,} گیف"
+            )
+
+    await event.reply("\n".join(lines))
 
 
 
