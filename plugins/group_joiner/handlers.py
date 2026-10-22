@@ -1,5 +1,3 @@
-
-import re
 from typing import TYPE_CHECKING
 
 from splusthon import events
@@ -8,57 +6,16 @@ from splusthon.errors import (
     FloodWaitError,
     RPCError,
 )
-from splusthon.tl.functions.messages import (
-    ImportChatInviteRequest,
-)
-from splusthon.tl.functions.channels import (
-    JoinChannelRequest,
-)
 
 from core.decorators import on_event
 from core.permissions import is_owner
 
+from . import joiner
+from .parser import extract_join_target
+
 
 if TYPE_CHECKING:
     from .plugin import GroupJoinerPlugin
-
-
-# لینک دعوت خصوصی:
-# https://splus.ir/joingroup/INVITE_HASH
-_INVITE_LINK_RE = re.compile(
-    r"(?:https?://)?(?:www\.)?"
-    r"splus\.ir/joingroup/([A-Za-z0-9_-]+)",
-    re.IGNORECASE,
-)
-
-# لینک عمومی گروه یا کانال:
-# https://splus.ir/USERNAME
-# مسیر joingroup عمداً از این الگو مستثنا شده است.
-_PUBLIC_LINK_RE = re.compile(
-    r"(?:https?://)?(?:www\.)?"
-    r"splus\.ir/"
-    r"(?!joingroup(?:/|[?#\s]|$))"
-    r"([A-Za-z0-9_-]+)",
-    re.IGNORECASE,
-)
-
-
-def _extract_join_target(
-    text: str,
-) -> tuple[str, str] | None:
-    text = text or ""
-
-    invite_match = _INVITE_LINK_RE.search(text)
-
-    if invite_match is not None:
-        return "invite", invite_match.group(1)
-
-    public_match = _PUBLIC_LINK_RE.search(text)
-
-    if public_match is not None:
-        return "public", public_match.group(1)
-
-    return None
 
 
 @on_event(events.NewMessage(incoming=True))
@@ -70,20 +27,19 @@ async def on_message(
     if not event.is_private:
         return
 
-    # فقط مالک ربات
+    # فقط مالک پلاگین
     if not is_owner(event.sender_id):
         return
 
     text = (event.raw_text or "").strip()
 
-    target = _extract_join_target(text)
+    target = extract_join_target(text)
 
     if target is None:
         return
 
     target_type, target_value = target
 
-    # لینک دعوت خصوصی و لینک عمومی دو API متفاوت دارند.
     link_description = (
         "لینک دعوت"
         if target_type == "invite"
@@ -92,32 +48,36 @@ async def on_message(
 
     try:
         if target_type == "invite":
-            request = ImportChatInviteRequest(target_value)
+            await joiner.join_by_invite_hash(
+                self.client,
+                target_value,
+            )
 
         else:
-            # ابتدا نام کاربری را به موجودیت واقعی کانال تبدیل کن.
-            channel = await self.client.get_entity(target_value)
-
-            # سپس درخواست عضویت را با موجودیت کانال بفرست.
-            request = JoinChannelRequest(channel)
-
-        await self.client(request)
+            await joiner.join_by_username(
+                self.client,
+                target_value,
+            )
 
     except ValueError as exc:
         print(
             "❌ Group Joiner - "
-            f"Resolve کردن مقصد ناموفق بود: {exc}"
+            f"Resolve error: {exc}"
         )
 
         await event.reply(
             "❌ آتریسا نتوانست مقصد لینک عمومی را پیدا کند.\n"
             f"نام کاربری: `{target_value}`\n"
-            "بررسی کن لینک درست باشد و مقصد یک کانال یا گروه عمومی باشد."
+            "بررسی کن لینک درست باشد و مقصد قابل دسترسی باشد."
         )
         return
 
     except FloodWaitError as exc:
-        seconds = getattr(exc, "seconds", None)
+        seconds = getattr(
+            exc,
+            "seconds",
+            None,
+        )
 
         message = (
             "⏳ سروش‌پلاس موقتاً درخواست‌های عضویت "
@@ -125,7 +85,9 @@ async def on_message(
         )
 
         if seconds is not None:
-            message += f"\nزمان انتظار: {seconds} ثانیه"
+            message += (
+                f"\nزمان انتظار: {seconds} ثانیه"
+            )
 
         await event.reply(message)
         return
