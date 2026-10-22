@@ -8,6 +8,7 @@ from splusthon.errors import FloodWaitError
 
 from core.decorators import command, on_event
 
+from . import memory
 
 if TYPE_CHECKING:
     from .plugin import GifGrabberPlugin
@@ -278,6 +279,16 @@ async def fetch_gifs(
 
         channel = target_dialog.entity
 
+        try:
+            await memory.initialize(self.db)
+        
+        except Exception as exc:
+            await event.reply(
+                "❌ آماده‌سازی بانک مرکزی گیف‌ها ناموفق بود.\n"
+                f"جزئیات: {exc}"
+            )
+            return
+
     except Exception as exc:
         await event.reply(
             "❌ دریافت فهرست گفت‌وگوها ناموفق بود.\n"
@@ -290,11 +301,12 @@ async def fetch_gifs(
         f"🎯 هدف: ذخیرهٔ حداکثر {target_count} گیف یکتا"
     )
 
-    saved_count = 0
+    collected_count = 0
+    duplicate_count = 0
     failed_count = 0
     scanned_count = 0
 
-    seen_document_ids = set()
+    seen_gif_keys = set()
     stopped_reason = None
 
 
@@ -309,7 +321,7 @@ async def fetch_gifs(
     offset_id = 0
     stop_requested = False
 
-    while saved_count < target_count:
+    while collected_count < target_count:
         page = []
 
         try:
@@ -370,7 +382,6 @@ async def fetch_gifs(
         offset_id = next_offset_id
 
         for message in page:
-            scanned_count += 1
 
             gif = message.gif
 
@@ -378,66 +389,52 @@ async def fetch_gifs(
                 continue
 
             document_id = getattr(gif, "id", None)
+            access_hash = getattr(gif, "access_hash", None)
 
-            if document_id is None:
-                continue
-
-            # جلوگیری از ذخیرهٔ تکراری یک سند
-            if document_id in seen_document_ids:
-                continue
-
-            seen_document_ids.add(document_id)
-
-            try:
-                await self.client(
-                    SaveGifRequest(
-                        id=gif,
-                        unsave=False,
-                    )
-                )
-
-            except FloodWaitError as exc:
+            if document_id is None or access_hash is None:
                 failed_count += 1
-
-                wait_seconds = getattr(exc, "seconds", None)
-
-                stopped_reason = (
-                    "محدودیت درخواست هنگام ذخیرهٔ گیف"
-                    + (
-                        f"؛ زمان انتظار: {wait_seconds} ثانیه"
-                        if wait_seconds is not None
-                        else ""
-                    )
-                )
-
                 print(
                     "⚠️ GIF Grabber - "
-                    f"FloodWait هنگام ذخیرهٔ گیف "
-                    f"{document_id}: {exc}"
+                    "شناسه یا access_hash گیف موجود نیست."
                 )
+                continue
 
-                stop_requested = True
-                break
+            gif_key = (document_id, access_hash)
+
+            # جلوگیری از بررسی تکراری یک گیف در همین اجرا
+            if gif_key in seen_gif_keys:
+                continue
+
+            seen_gif_keys.add(gif_key)
+
+            try:
+                is_new = await memory.remember_gif(
+                    self.db,
+                    document_id,
+                    access_hash,
+                )
 
             except Exception as exc:
                 failed_count += 1
-
                 print(
-                    "❌ GIF Grabber - "
-                    f"ذخیرهٔ گیف {document_id} ناموفق بود: "
-                    f"{exc}"
+                    "❌ GIF Grabber - ثبت گیف "
+                    f"{document_id} ناموفق بود: {exc}"
                 )
                 continue
 
-            saved_count += 1
+            if not is_new:
+                duplicate_count += 1
+                continue
+
+            collected_count += 1
 
             print(
-                "✅ GIF Grabber - "
-                f"ذخیره شد: {document_id} "
-                f"({saved_count}/{target_count})"
+                "✅ GIF Grabber - شناسهٔ گیف ثبت شد: "
+                f"{document_id} "
+                f"({collected_count}/{target_count})"
             )
 
-            if saved_count >= target_count:
+            if collected_count >= target_count:
                 stop_requested = True
                 break
 
@@ -451,10 +448,12 @@ async def fetch_gifs(
     # Final report
     # --------------------------------------------------
 
+
     result_lines = [
-        "📥 عملیات دریافت گیف تمام شد.",
-        f"✅ ذخیره‌های موفق: {saved_count}",
-        f"❌ ذخیره‌های ناموفق: {failed_count}",
+        "📥 عملیات جمع‌آوری گیف تمام شد.",
+        f"🆕 رکوردهای جدید: {collected_count}",
+        f"♻️ گیف‌های تکراری: {duplicate_count}",
+        f"❌ خطاهای ثبت: {failed_count}",
         f"🔎 پیام‌های بررسی‌شده: {scanned_count}",
     ]
 
@@ -467,14 +466,12 @@ async def fetch_gifs(
         result_lines.append(
             f"⚠️ علت توقف: {stopped_reason}"
         )
-    elif saved_count < target_count:
+    elif collected_count < target_count:
         result_lines.append(
-            "ℹ️ تاریخچه تمام شد یا گیف یکتای بیشتری پیدا نشد."
+            "ℹ️ تاریخچه تمام شد یا گیف جدید دیگری پیدا نشد."
         )
 
-    await event.reply(
-        "\n".join(result_lines)
-    )
+    await event.reply("\n".join(result_lines))
 
 
 @on_event(events.NewMessage(incoming=True))
