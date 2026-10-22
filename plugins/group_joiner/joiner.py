@@ -2,11 +2,14 @@ from splusthon import utils
 from splusthon.tl import types
 
 from splusthon.tl.functions.channels import (
+    GetChannelsRequest,
     JoinChannelRequest,
 )
+
 from splusthon.tl.functions.messages import (
     ImportChatInviteRequest,
 )
+
 
 
 
@@ -15,15 +18,8 @@ async def join_by_chat_id(
     chat_id: int,
 ):
     """
-    تلاش برای عضویت در کانال با شناسهٔ عددی.
-
-    قالب‌های پشتیبانی‌شده:
-    - شناسهٔ استاندارد SPlusthon
-    - قالب قدیمی -100<ID>
-    - شناسهٔ خام مثبت کانال
-
-    اگر شناسه به‌تنهایی برای resolve کردن کانال کافی نباشد،
-    تلاش مستقیم با InputChannel نیز انجام می‌شود.
+    دریافت موجودیت کانال از API با شناسهٔ عددی،
+    سپس تلاش برای عضویت با موجودیت واقعی.
     """
 
     raw_id = str(chat_id).strip()
@@ -36,84 +32,76 @@ async def join_by_chat_id(
         ) from exc
 
     if chat_id == 0:
-        raise ValueError(
-            "chat_id نمی‌تواند صفر باشد."
-        )
+        raise ValueError("chat_id نمی‌تواند صفر باشد.")
 
-    # قالب استاندارد شناسه‌های علامت‌گذاری‌شدهٔ SPlusthon:
-    # -(1_000_000_000_000 + channel_id)
+    # شناسهٔ استاندارد SPlusthon
     if chat_id < -1_000_000_000_000:
         channel_id, peer_type = utils.resolve_id(chat_id)
 
         if peer_type is not types.PeerChannel:
             raise ValueError(
-                "شناسهٔ واردشده متعلق به کانال نیست."
+                "شناسهٔ استاندارد واردشده متعلق به کانال نیست."
             )
 
-    # پشتیبانی از قالب -100<ID>، مانند -10018050783
+    # قالب رایج -100<ID>
     elif raw_id.startswith("-100") and raw_id[4:].isdigit():
         channel_id = int(raw_id[4:])
 
-    # شناسهٔ خام مثبت کانال
+    # شناسهٔ خام مثبت
     elif chat_id > 0:
         channel_id = chat_id
 
     else:
         raise ValueError(
-            "این شناسه با قالب شناخته‌شدهٔ کانال سازگار نیست. "
-            "شناسهٔ گروه معمولی نیز لزوماً برای عضویت کافی نیست."
+            "قالب شناسه شناخته‌شده نیست."
         )
 
     if channel_id <= 0:
+        raise ValueError("شناسهٔ کانال نامعتبر است.")
+
+    # مرحلهٔ اول: درخواست مستقیم به API برای دریافت موجودیت.
+    # عمداً به get_entity و کش قبلی وابسته نیستیم.
+    response = await client(
+        GetChannelsRequest(
+            id=[
+                types.InputChannel(
+                    channel_id=channel_id,
+                    access_hash=0,
+                )
+            ]
+        )
+    )
+
+    chats = getattr(response, "chats", None) or []
+
+    channel = next(
+        (
+            item
+            for item in chats
+            if getattr(item, "id", None) == channel_id
+        ),
+        None,
+    )
+
+    if channel is None:
         raise ValueError(
-            "شناسهٔ کانال نامعتبر است."
+            f"API هیچ موجودیتی برای کانال {channel_id} برنگرداند."
         )
 
-    # ابتدا از روش معمول استفاده می‌کنیم تا اگر کانال
-    # در کش یا نشست شناخته شده است، access_hash واقعی را بگیریم.
-    try:
-        channel = await client.get_entity(
-            types.PeerChannel(channel_id)
-        )
-
-    except (ValueError, IndexError):
-        channel = None
-
-    if channel is not None:
-        if not isinstance(
-            channel,
-            (
-                types.Channel,
-                types.ChannelForbidden,
-            ),
-        ):
-            raise ValueError(
-                "شناسه به یک کانال معتبر اشاره نمی‌کند."
-            )
-
-        return await client(
-            JoinChannelRequest(channel)
-        )
-
-    # اگر resolve معمولی شکست خورد، تلاش مستقیم با شناسه.
-    # در این مسیر access_hash واقعی در دسترس نیست؛
-    # بنابراین موفقیت به پشتیبانی سرور از این درخواست بستگی دارد.
-    try:
-        input_channel = types.InputChannel(
-            channel_id=channel_id,
-            access_hash=0,
-        )
-
-        return await client(
-            JoinChannelRequest(input_channel)
-        )
-
-    except IndexError as exc:
+    if not isinstance(
+        channel,
+        (types.Channel, types.ChannelForbidden),
+    ):
         raise ValueError(
-            "SPlusthon نتوانست کانال را با این شناسه پیدا کند. "
-            "ممکن است شناسه اشتباه باشد یا access_hash واقعی "
-            "برای این نشست در دسترس نباشد."
-        ) from exc
+            f"موجودیت دریافت‌شده کانال قابل عضویت نیست: "
+            f"{type(channel).__name__}"
+        )
+
+    # موجودیت برگشتی API را مستقیم استفاده می‌کنیم؛
+    # این موجودیت به جای access_hash=0، اطلاعات واقعی پاسخ را دارد.
+    return await client(
+        JoinChannelRequest(channel)
+    )
 
 
 async def join_by_username(
