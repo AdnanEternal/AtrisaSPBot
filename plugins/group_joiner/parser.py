@@ -1,3 +1,4 @@
+
 import re
 
 
@@ -17,13 +18,23 @@ _PUBLIC_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# شناسهٔ عددی چت
+_CHAT_ID_RE = re.compile(r"-?\d+")
+
 
 def extract_join_target(
     text: str,
 ) -> tuple[str, str] | None:
-    """استخراج مقصد عضویت از متن پیام."""
+    """تشخیص لینک دعوت، لینک عمومی یا شناسهٔ عددی چت."""
 
-    text = text or ""
+    text = (text or "").strip()
+
+    if not text:
+        return None
+
+    # شناسه باید به‌تنهایی در پیام ارسال شده باشد.
+    if _CHAT_ID_RE.fullmatch(text):
+        return "chat_id", text
 
     invite_match = _INVITE_LINK_RE.search(text)
 
