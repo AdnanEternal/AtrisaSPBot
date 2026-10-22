@@ -2,7 +2,6 @@ from splusthon import utils
 from splusthon.tl import types
 
 from splusthon.tl.functions.channels import (
-    GetChannelsRequest,
     JoinChannelRequest,
 )
 
@@ -13,13 +12,15 @@ from splusthon.tl.functions.messages import (
 
 
 
+
 async def join_by_chat_id(
     client,
     chat_id: int,
 ):
     """
-    دریافت موجودیت کانال از API با شناسهٔ عددی،
-    سپس تلاش برای عضویت با موجودیت واقعی.
+    ابتدا تلاش می‌کند موجودیت کانال را از کش نشست دریافت کند.
+    اگر در کش نباشد، SPlusthon خودش از API برای resolve کردن
+    شناسه استفاده می‌کند.
     """
 
     raw_id = str(chat_id).strip()
@@ -32,9 +33,11 @@ async def join_by_chat_id(
         ) from exc
 
     if chat_id == 0:
-        raise ValueError("chat_id نمی‌تواند صفر باشد.")
+        raise ValueError(
+            "chat_id نمی‌تواند صفر باشد."
+        )
 
-    # شناسهٔ استاندارد SPlusthon
+    # شناسهٔ علامت‌گذاری‌شدهٔ استاندارد SPlusthon
     if chat_id < -1_000_000_000_000:
         channel_id, peer_type = utils.resolve_id(chat_id)
 
@@ -43,7 +46,7 @@ async def join_by_chat_id(
                 "شناسهٔ استاندارد واردشده متعلق به کانال نیست."
             )
 
-    # قالب رایج -100<ID>
+    # قالب رایج -100<ID> که در ورودی پروژه پشتیبانی می‌کنیم
     elif raw_id.startswith("-100") and raw_id[4:].isdigit():
         channel_id = int(raw_id[4:])
 
@@ -57,48 +60,48 @@ async def join_by_chat_id(
         )
 
     if channel_id <= 0:
-        raise ValueError("شناسهٔ کانال نامعتبر است.")
-
-    # مرحلهٔ اول: درخواست مستقیم به API برای دریافت موجودیت.
-    # عمداً به get_entity و کش قبلی وابسته نیستیم.
-    response = await client(
-        GetChannelsRequest(
-            id=[
-                types.InputChannel(
-                    channel_id=channel_id,
-                    access_hash=0,
-                )
-            ]
-        )
-    )
-
-    chats = getattr(response, "chats", None) or []
-
-    channel = next(
-        (
-            item
-            for item in chats
-            if getattr(item, "id", None) == channel_id
-        ),
-        None,
-    )
-
-    if channel is None:
         raise ValueError(
-            f"API هیچ موجودیتی برای کانال {channel_id} برنگرداند."
+            "شناسهٔ کانال نامعتبر است."
         )
+
+    # مهم: به‌جای GetChannelsRequest با access_hash=0،
+    # از API عمومی کتابخانه استفاده می‌کنیم.
+    # SPlusthon ابتدا کش حافظه و کش نشست را بررسی می‌کند
+    # و در صورت نیاز تلاش می‌کند موجودیت را از API بگیرد.
+    try:
+        channel = await client.get_entity(
+            types.PeerChannel(channel_id)
+        )
+
+    except (ValueError, IndexError, KeyError) as exc:
+        raise ValueError(
+            f"کانال با شناسهٔ داخلی {channel_id} resolve نشد. "
+            "ممکن است موجودیت در کش نشست نباشد و API هم "
+            "نتواند آن را فقط با شناسه پیدا کند. "
+            "اگر کانال عمومی است، ابتدا لینک یا نام کاربری آن "
+            "را در همین نشست resolve کن و سپس شناسه را امتحان کن."
+        ) from exc
 
     if not isinstance(
         channel,
-        (types.Channel, types.ChannelForbidden),
+        (
+            types.Channel,
+            types.ChannelForbidden,
+        ),
     ):
         raise ValueError(
-            f"موجودیت دریافت‌شده کانال قابل عضویت نیست: "
-            f"{type(channel).__name__}"
+            "موجودیت دریافت‌شده از نوع قابل‌قبول برای "
+            f"عضویت در کانال نیست: {type(channel).__name__}"
         )
 
-    # موجودیت برگشتی API را مستقیم استفاده می‌کنیم؛
-    # این موجودیت به جای access_hash=0، اطلاعات واقعی پاسخ را دارد.
+    print(
+        "✅ Group Joiner - Channel resolved by ID: "
+        f"input_id={raw_id}, "
+        f"channel_id={channel.id}, "
+        f"splus_peer_id={utils.get_peer_id(channel)}, "
+        f"username={getattr(channel, 'username', None)!r}"
+    )
+
     return await client(
         JoinChannelRequest(channel)
     )
@@ -122,6 +125,16 @@ async def join_by_username(
         raise ValueError(
             "نام کاربری به یک کانال معتبر اشاره نمی‌کند."
         )
+
+    print(
+        "🔎 Group Joiner - Public link resolved: "
+        f"entity_type={type(channel).__name__}, "
+        f"channel_id={channel.id}, "
+        f"splus_peer_id={utils.get_peer_id(channel)}, "
+        f"username={getattr(channel, 'username', None)!r}, "
+        f"has_access_hash="
+        f"{getattr(channel, 'access_hash', None) is not None}"
+    )
 
     return await client(
         JoinChannelRequest(channel)
