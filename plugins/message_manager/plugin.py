@@ -9,3 +9,4 @@ class MessageManagerPlugin(BasePlugin):
     version = "1.0.0"
 
     send_text_messages = handlers.send_text_messages
+
