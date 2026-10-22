@@ -41,25 +41,17 @@ async def on_message(
 
     target_type, target_value = target
 
-    descriptions = {
-        "invite": "لینک دعوت",
-        "public": "لینک عمومی",
-        "chat_id": "شناسهٔ چت",
-    }
-
-    target_description = descriptions[target_type]
+    link_description = (
+        "لینک دعوت"
+        if target_type == "invite"
+        else "لینک عمومی"
+    )
 
     try:
         if target_type == "invite":
             await joiner.join_by_invite_hash(
                 self.client,
                 target_value,
-            )
-
-        elif target_type == "chat_id":
-            await joiner.join_by_chat_id(
-                self.client,
-                int(target_value),
             )
 
         else:
@@ -71,20 +63,19 @@ async def on_message(
     except ValueError as exc:
         print(
             "❌ Group Joiner - "
-            f"Resolve error ({target_description}): {exc}"
+            f"Resolve error ({link_description}): {exc}"
         )
 
-        if target_type == "chat_id":
-            await event.reply(
-                "❌ عضویت با این شناسه ناموفق بود.\n"
-                f"شناسه: `{target_value}`\n"
-                f"جزئیات: `{exc}`"
-            )
-        else:
+        if target_type == "public":
             await event.reply(
                 "❌ آتریسا نتوانست مقصد لینک عمومی را پیدا کند.\n"
                 f"نام کاربری: `{target_value}`\n"
                 "بررسی کن لینک درست باشد و مقصد قابل دسترسی باشد."
+            )
+        else:
+            await event.reply(
+                "❌ لینک دعوت معتبر نیست یا نتوانست مقصد آن را پیدا کند.\n"
+                f"جزئیات: `{exc}`"
             )
 
         return
@@ -137,22 +128,11 @@ async def on_message(
             f"{type(exc).__name__}: {exc}"
         )
 
-        if target_type == "chat_id":
-            await event.reply(
-                "❌ عضویت با شناسه ناموفق بود.\n"
-                f"شناسه: `{target_value}`\n"
-                f"نوع خطا: `{type(exc).__name__}`\n"
-                f"جزئیات: `{exc}`\n\n"
-                "ممکن است شناسه معتبر نباشد یا سرور برای عضویت، "
-                "اطلاعات بیشتری از کانال نیاز داشته باشد."
-            )
-        else:
-            await event.reply(
-                "❌ ورود به گروه یا کانال ناموفق بود.\n"
-                f"نوع مقصد: {target_description}\n"
-                f"خطا: `{type(exc).__name__}`"
-            )
-
+        await event.reply(
+            "❌ ورود به گروه یا کانال ناموفق بود.\n"
+            f"نوع لینک: {link_description}\n"
+            f"خطا: `{type(exc).__name__}`"
+        )
         return
 
     except Exception as exc:
