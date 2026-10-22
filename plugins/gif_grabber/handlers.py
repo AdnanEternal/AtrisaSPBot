@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 
 MAX_GIFS_PER_COMMAND = 200
+MAX_SEND_GIFS_PER_COMMAND = 5000
 # حداکثر تعداد درخواست‌های حذف هم‌زمان
 GIF_DELETE_CONCURRENCY = 5
 
@@ -472,6 +473,153 @@ async def fetch_gifs(
         )
 
     await event.reply("\n".join(result_lines))
+
+
+@command(
+    name="ارسال",
+    permission="owner",
+    chat_type="all",
+    description="گیف‌های تصادفی بانک مرکزی را برای یک UID می‌فرستد.",
+    native_name="send_gifs",
+)
+async def send_gifs(
+    self: "GifGrabberPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    args = getattr(event, "args", [])
+
+    if len(args) != 2:
+        await event.reply(
+            "❌ تعداد گیف و UID مقصد را وارد کن.\n"
+            "مثال:\n"
+            + self.command_usage(
+                event.command,
+                "1 <UID>",
+                event=event,
+            )
+        )
+        return
+
+    try:
+        requested_count = int(args[0])
+        target_uid = int(args[1])
+    except (TypeError, ValueError):
+        await event.reply(
+            "❌ تعداد گیف و UID باید عدد باشند."
+        )
+        return
+
+    if requested_count <= 0 or target_uid <= 0:
+        await event.reply(
+            "❌ تعداد و UID باید بزرگ‌تر از صفر باشند."
+        )
+        return
+
+    target_count = min(
+        requested_count,
+        MAX_SEND_GIFS_PER_COMMAND,
+    )
+
+    try:
+        gifs = await memory.get_random_gifs(
+            self.db,
+            target_count,
+        )
+    except Exception as exc:
+        await event.reply(
+            "❌ خواندن بانک مرکزی گیف‌ها ناموفق بود.\n"
+            f"جزئیات: {exc}"
+        )
+        return
+
+    if not gifs:
+        await event.reply(
+            "ℹ️ بانک مرکزی گیف‌ها خالی است."
+        )
+        return
+
+    # تشخیص UID خود یوزربات برای ارسال به Saved Messages
+    try:
+        me = await self.client.get_me()
+        my_uid = getattr(me, "id", None)
+
+        if my_uid is None:
+            raise RuntimeError(
+                "شناسهٔ حساب فعلی قابل تشخیص نیست."
+            )
+
+        if int(my_uid) == target_uid:
+            target_peer = "me"
+        else:
+            target_peer = await self.client.get_input_entity(
+                target_uid
+            )
+
+    except Exception as exc:
+        await event.reply(
+            "❌ تشخیص حساب مقصد ناموفق بود.\n"
+            f"جزئیات: {exc}"
+        )
+        return
+
+    sent_count = 0
+    failed_count = 0
+
+    for gif in gifs:
+        document_id = int(gif["doc_id"])
+        access_hash = int(gif["access_hash"])
+
+        try:
+            input_document = types.InputDocument(
+                id=document_id,
+                access_hash=access_hash,
+                file_reference=b"",
+            )
+
+            await self.client(
+                SendMediaRequest(
+                    peer=target_peer,
+                    media=types.InputMediaDocument(
+                        id=input_document,
+                    ),
+                    message="",
+                )
+            )
+
+            sent_count += 1
+
+            print(
+                "✅ GIF Grabber - گیف ارسال شد: "
+                f"{document_id} → {target_uid}"
+            )
+
+        except Exception as exc:
+            failed_count += 1
+
+            print(
+                "❌ GIF Grabber - ارسال گیف "
+                f"{document_id} به {target_uid} ناموفق بود: "
+                f"{exc}"
+            )
+
+    result_lines = [
+        "📤 عملیات ارسال گیف تمام شد.",
+        f"🎯 UID مقصد: {target_uid}",
+        f"✅ ارسال موفق: {sent_count}",
+        f"❌ ارسال ناموفق: {failed_count}",
+    ]
+
+    if requested_count > MAX_SEND_GIFS_PER_COMMAND:
+        result_lines.append(
+            f"ℹ️ سقف هر اجرا "
+            f"{MAX_SEND_GIFS_PER_COMMAND} گیف است."
+        )
+
+    await event.reply("\n".join(result_lines))
+
+
+
+
 
 
 @on_event(events.NewMessage(incoming=True))

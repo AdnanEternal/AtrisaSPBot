@@ -5,7 +5,7 @@ from . import handlers
 
 class GifGrabberPlugin(BasePlugin):
     name = "GIF Grabber"
-    version = "0.1.0"
+    version = "1.0.0"
 
     def __init__(
         self,
@@ -26,3 +26,4 @@ class GifGrabberPlugin(BasePlugin):
     on_message = handlers.on_message
     fetch_gifs = handlers.fetch_gifs
     clear_saved_gifs = handlers.clear_saved_gifs
+    send_gifs = handlers.send_gifs
