@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING
+import ast
 import re
+
 from splusthon.tl.functions.messages import SendMediaRequest
 from splusthon import events
 from splusthon.tl.functions.messages import SaveGifRequest,GetSavedGifsRequest
@@ -197,28 +199,64 @@ async def fetch_gifs(
     self: "GifGrabberPlugin",
     event: events.NewMessage.Event,
 ) -> None:
-    args = getattr(event, "args", [])
 
-    if len(args) != 2:
+
+    args_text = getattr(event, "args_text", "").strip()
+
+    match = re.fullmatch(
+        r"(\d+)\s+(-?\d+)(?:\s+(.+))?",
+        args_text,
+        re.DOTALL,
+    )
+
+    if not match:
         await event.reply(
-            "❌ تعداد و شناسهٔ کانال را وارد کن.\n"
-            "مثال:\n"
-            + self.command_usage(
-                event.command,
-                "100 <channel_id>",
-                event=event,
-            )
+            "❌ قالب دستور نامعتبر است.\n"
+            "مثال بدون تگ:\n"
+            "!دریافت 100 -100\n\n"
+            "مثال همراه تگ:\n"
+            '!دریافت 100 -100 ["بانمک", "کیوت", "نینی"]'
         )
         return
 
     try:
-        requested_count = int(args[0])
-        channel_id = int(args[1])
+        requested_count = int(match.group(1))
+        channel_id = int(match.group(2))
     except (TypeError, ValueError):
         await event.reply(
             "❌ تعداد گیف‌ها و شناسهٔ کانال باید عدد باشند."
         )
         return
+
+    tags = None
+    tags_text = match.group(3)
+
+    if tags_text:
+        try:
+            parsed_tags = ast.literal_eval(tags_text)
+        except (ValueError, SyntaxError):
+            await event.reply(
+                "❌ تگ‌ها باید به‌شکل یک فهرست معتبر باشند.\n"
+                'مثال: ["بانمک", "کیوت", "نینی"]'
+            )
+            return
+
+        if (
+            not isinstance(parsed_tags, list)
+            or any(not isinstance(tag, str) for tag in parsed_tags)
+        ):
+            await event.reply(
+                "❌ تگ‌ها باید فهرستی از رشته‌ها باشند.\n"
+                'مثال: ["بانمک", "کیوت", "نینی"]'
+            )
+            return
+
+        tags = list(dict.fromkeys(
+            tag.strip()
+            for tag in parsed_tags
+            if tag.strip()
+        ))
+
 
     if requested_count <= 0:
         await event.reply(
@@ -306,6 +344,7 @@ async def fetch_gifs(
     duplicate_count = 0
     failed_count = 0
     scanned_count = 0
+    processed_count = 0
 
     seen_gif_keys = set()
     stopped_reason = None
@@ -322,7 +361,7 @@ async def fetch_gifs(
     offset_id = 0
     stop_requested = False
 
-    while collected_count < target_count:
+    while processed_count < target_count:
         page = []
 
         try:
@@ -383,7 +422,8 @@ async def fetch_gifs(
         offset_id = next_offset_id
 
         for message in page:
-
+            scanned_count += 1
+            
             gif = message.gif
 
             if gif is None:
@@ -406,13 +446,16 @@ async def fetch_gifs(
             if gif_key in seen_gif_keys:
                 continue
 
+
             seen_gif_keys.add(gif_key)
+            processed_count += 1
 
             try:
                 is_new = await memory.remember_gif(
                     self.db,
                     document_id,
                     access_hash,
+                    tags=tags,
                 )
 
             except Exception as exc:
@@ -421,23 +464,28 @@ async def fetch_gifs(
                     "❌ GIF Grabber - ثبت گیف "
                     f"{document_id} ناموفق بود: {exc}"
                 )
-                continue
 
-            if not is_new:
-                duplicate_count += 1
-                continue
+            else:
+                if is_new:
+                    collected_count += 1
 
-            collected_count += 1
+                    print(
+                        "✅ GIF Grabber - گیف جدید ثبت شد: "
+                        f"{document_id}"
+                    )
+                else:
+                    duplicate_count += 1
 
-            print(
-                "✅ GIF Grabber - شناسهٔ گیف ثبت شد: "
-                f"{document_id} "
-                f"({collected_count}/{target_count})"
-            )
+                    print(
+                        "♻️ GIF Grabber - گیف تکراری بررسی شد "
+                        "و تگ‌های جدید احتمالی ثبت شدند: "
+                        f"{document_id}"
+                    )
 
-            if collected_count >= target_count:
+            if processed_count >= target_count:
                 stop_requested = True
                 break
+
 
         if stop_requested:
             break
@@ -456,6 +504,7 @@ async def fetch_gifs(
         f"♻️ گیف‌های تکراری: {duplicate_count}",
         f"❌ خطاهای ثبت: {failed_count}",
         f"🔎 پیام‌های بررسی‌شده: {scanned_count}",
+        f"🏷️ گیف‌های پردازش‌شده: {processed_count}",
     ]
 
     if requested_count > MAX_GIFS_PER_COMMAND:
@@ -467,7 +516,7 @@ async def fetch_gifs(
         result_lines.append(
             f"⚠️ علت توقف: {stopped_reason}"
         )
-    elif collected_count < target_count:
+    elif processed_count < target_count:
         result_lines.append(
             "ℹ️ تاریخچه تمام شد یا گیف جدید دیگری پیدا نشد."
         )
