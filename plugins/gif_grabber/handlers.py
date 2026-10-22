@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
-
+import re
+from splusthon.tl.functions.messages import SendMediaRequest
 from splusthon import events
 from splusthon.tl.functions.messages import SaveGifRequest,GetSavedGifsRequest
 from splusthon.tl import types
@@ -475,18 +476,168 @@ async def fetch_gifs(
         "\n".join(result_lines)
     )
 
+
 @on_event(events.NewMessage(incoming=True))
 async def on_message(
     self: "GifGrabberPlugin",
     event: events.NewMessage.Event,
 ) -> None:
+    if event.document:
+        print(event.document.id,"___access hash___",event.document.access_hash)
     
-
     if (
         event.is_group is not True
         and event.is_channel is not True
     ):
         return
+    print('event recived')
+    raw_text = (event.raw_text or "").strip()
+
+    # --------------------------------------------------
+    # TEST: send the document with ID 0
+    # --------------------------------------------------
+
+    if raw_text == "0":
+        document_id = 144516515687941428
+        access_hash = -1768943261643636478
+
+    else:
+        # Accept Document(id=..., access_hash=...)
+        # or a message containing the two labelled values.
+        match = re.search(
+            r"\bid\s*=\s*(-?\d+)\s*,\s*"
+            r"access_hash\s*=\s*(-?\d+)",
+            raw_text,
+            re.IGNORECASE,
+        )
+
+        if match:
+            document_id = int(match.group(1))
+            access_hash = int(match.group(2))
+
+        elif re.fullmatch(
+            r"\s*-?\d+\s+-?\d+\s*",
+            raw_text,
+        ):
+            # Also accept exactly two space-separated integers.
+            values = [
+                int(value)
+                for value in raw_text.split()
+            ]
+            document_id, access_hash = values
+
+        else:
+            document_id = None
+            access_hash = None
+
+    # --------------------------------------------------
+    # Try sending the requested document
+    # --------------------------------------------------
+
+    if document_id is not None:
+        saved_error = None
+
+        # Method 1: look for the document in Saved GIFs.
+        # This can provide a current file_reference.
+        try:
+            response = await self.client(
+                GetSavedGifsRequest(hash=0)
+            )
+
+            gifs = getattr(response, "gifs", None) or []
+
+            gif = next(
+                (
+                    item
+                    for item in gifs
+                    if getattr(item, "id", None) == document_id
+                    and getattr(item, "access_hash", None)
+                    == access_hash
+                ),
+                None,
+            )
+
+            if gif is not None:
+                input_document = types.InputDocument(
+                    id=gif.id,
+                    access_hash=gif.access_hash,
+                    file_reference=gif.file_reference,
+                )
+
+                await self.client(
+                    SendMediaRequest(
+                        peer=event.chat_id,
+                        media=types.InputMediaDocument(
+                            id=input_document,
+                        ),
+                        message="",
+                    )
+                )
+
+                print(
+                    "✅ GIF Grabber - سند با مرجع "
+                    "موجود در Saved GIFs ارسال شد: "
+                    f"{document_id}"
+                )
+                return
+
+        except Exception as exc:
+            saved_error = str(exc)
+
+            print(
+                "⚠️ GIF Grabber - ارسال از Saved GIFs "
+                f"موفق نبود: {exc}"
+            )
+
+        # Method 2: experimental direct access using
+        # only document ID and access hash.
+        try:
+            input_document = types.InputDocument(
+                id=document_id,
+                access_hash=access_hash,
+                file_reference=b"",
+            )
+
+            await self.client(
+                SendMediaRequest(
+                    peer=event.chat_id,
+                    media=types.InputMediaDocument(
+                        id=input_document,
+                    ),
+                    message="",
+                )
+            )
+
+            print(
+                "✅ GIF Grabber - ارسال مستقیم با "
+                "file_reference خالی موفق بود: "
+                f"{document_id}"
+            )
+            return
+
+        except Exception as exc:
+            print(
+                "❌ GIF Grabber - ارسال مستقیم سند "
+                f"{document_id} ناموفق بود: {exc}"
+            )
+
+            details = (
+                f"\nخطای Saved GIFs: {saved_error}"
+                if saved_error
+                else ""
+            )
+
+            await event.reply(
+                "❌ ارسال گیف ناموفق بود.\n"
+                f"شناسه: {document_id}\n"
+                f"خطای روش مستقیم: {exc}"
+                f"{details}"
+            )
+            return
+
+    # --------------------------------------------------
+    # Existing behavior: save incoming GIFs
+    # --------------------------------------------------
 
     gif = event.message.gif
 
@@ -508,4 +659,7 @@ async def on_message(
         )
         return
 
-    print("✅ GIF Grabber - گیف به Saved GIFs اضافه شد.")
+    print(
+        "✅ GIF Grabber - "
+        "گیف به Saved GIFs اضافه شد."
+    )
