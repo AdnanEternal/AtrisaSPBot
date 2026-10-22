@@ -84,15 +84,37 @@ async def on_message(
     target_type, target_value = target
 
     # لینک دعوت خصوصی و لینک عمومی دو API متفاوت دارند.
-    if target_type == "invite":
-        request = ImportChatInviteRequest(target_value)
-        link_description = "لینک دعوت"
-    else:
-        request = JoinChannelRequest(target_value)
-        link_description = "لینک عمومی"
+    link_description = (
+        "لینک دعوت"
+        if target_type == "invite"
+        else "لینک عمومی"
+    )
 
     try:
+        if target_type == "invite":
+            request = ImportChatInviteRequest(target_value)
+
+        else:
+            # ابتدا نام کاربری را به موجودیت واقعی کانال تبدیل کن.
+            channel = await self.client.get_entity(target_value)
+
+            # سپس درخواست عضویت را با موجودیت کانال بفرست.
+            request = JoinChannelRequest(channel)
+
         await self.client(request)
+
+    except ValueError as exc:
+        print(
+            "❌ Group Joiner - "
+            f"Resolve کردن مقصد ناموفق بود: {exc}"
+        )
+
+        await event.reply(
+            "❌ آتریسا نتوانست مقصد لینک عمومی را پیدا کند.\n"
+            f"نام کاربری: `{target_value}`\n"
+            "بررسی کن لینک درست باشد و مقصد یک کانال یا گروه عمومی باشد."
+        )
+        return
 
     except FloodWaitError as exc:
         seconds = getattr(exc, "seconds", None)
