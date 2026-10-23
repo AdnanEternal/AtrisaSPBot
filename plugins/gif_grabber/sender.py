@@ -393,7 +393,32 @@ async def _run_send_job(
                     )
                 )
 
+                # این گیف واقعاً ارسال شده است؛
+                # قبل از جلو بردن next_index سابقه‌اش را ثبت می‌کنیم.
+                try:
+                    await memory.remember_sent_gif(
+                        self.db,
+                        target_id,
+                        document_id,
+                        access_hash,
+                    )
+
+                except Exception as history_exc:
+                    # خطای ثبت تاریخچه نباید باعث شود
+                    # ارسال موفق را به‌اشتباه ارسال ناموفق بدانیم.
+                    print(
+                        "❌ GIF Grabber - ثبت سابقهٔ ارسال گیف "
+                        f"{document_id} برای مقصد {target_id} ناموفق بود: "
+                        f"{history_exc}"
+                    )
+
                 sent_count += 1
+
+                print(
+                    f"✅ GIF Grabber - گیف {document_id} "
+                    f"به {target_id} ارسال شد "
+                    f"(job #{job_id})."
+                )
 
                 print(
                     f"✅ GIF Grabber - گیف {document_id} "

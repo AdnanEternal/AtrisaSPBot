@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING
 import ast
 import re
+import asyncio
 
 from splusthon.tl.functions.messages import SendMediaRequest
 from splusthon import events
@@ -575,6 +576,117 @@ async def fetch_gifs(
     await event.reply("\n".join(result_lines))
 
 
+def _get_send_lock(
+    self,
+    target_id: int,
+) -> asyncio.Lock:
+    """قفل مستقل برای هماهنگ‌کردن انتخاب و رزرو گیف‌های هر مقصد."""
+
+    target_id = int(target_id)
+
+    locks = getattr(
+        self,
+        "_gif_send_locks",
+        None,
+    )
+
+    if locks is None:
+        locks = {}
+        self._gif_send_locks = locks
+
+    lock = locks.get(target_id)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[target_id] = lock
+
+    return lock
+
+
+@command(
+    name="اجازه_تکرار_گیف",
+    permission="owner",
+    chat_type="all",
+    description="فعال یا غیرفعال کردن ارسال گیف تکراری برای یک مقصد.",
+    native_name="set_gif_repeats",
+)
+async def set_gif_repeats(
+    self: "GifGrabberPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    args_text = getattr(
+        event,
+        "args_text",
+        "",
+    ).strip()
+
+    match = re.fullmatch(
+        r"(-?\d+)\s+(روشن|خاموش|فعال|غیرفعال|on|off)",
+        args_text,
+        re.IGNORECASE,
+    )
+
+    if not match:
+        await event.reply(
+            "❌ قالب دستور نامعتبر است.\n"
+            "برای ممنوع‌کردن گیف تکراری:\n"
+            "`!اجازه_تکرار_گیف -100123 خاموش`\n\n"
+            "برای مجازکردن آن:\n"
+            "`!اجازه_تکرار_گیف -100123 روشن`"
+        )
+        return
+
+    try:
+        target_id = int(match.group(1))
+
+    except (TypeError, ValueError):
+        await event.reply(
+            "❌ شناسهٔ مقصد معتبر نیست."
+        )
+        return
+
+    if target_id == 0:
+        await event.reply(
+            "❌ شناسهٔ مقصد نمی‌تواند صفر باشد."
+        )
+        return
+
+    state = match.group(2).lower()
+
+    allow_repeats = state in {
+        "روشن",
+        "فعال",
+        "on",
+    }
+
+    try:
+        # تغییر تنظیم و انتخاب گیف برای همان مقصد
+        # نباید هم‌زمان و با تنظیمات متفاوت انجام شود.
+        async with _get_send_lock(self, target_id):
+            await memory.set_chat_repeats(
+                self.db,
+                target_id,
+                allow_repeats,
+            )
+
+    except Exception as exc:
+        await event.reply(
+            "❌ تغییر تنظیم تکرار گیف ناموفق بود.\n"
+            f"جزئیات: `{type(exc).__name__}: {exc}`"
+        )
+        return
+
+    status = (
+        "مجاز شد"
+        if allow_repeats
+        else "ممنوع شد"
+    )
+
+    await event.reply(
+        f"✅ ارسال گیف تکراری برای مقصد `{target_id}` {status}."
+    )
+
+
 @command(
     name="ارسال",
     permission="owner",
@@ -710,58 +822,103 @@ async def send_gifs(
         MAX_SEND_GIFS_PER_COMMAND,
     )
 
-    try:
-        gifs = await memory.get_random_gifs(
-            self.db,
-            target_count,
-            tags=tags,
-        )
-
-    except Exception as exc:
-        await event.reply(
-            "❌ خواندن بانک مرکزی گیف‌ها ناموفق بود.\n"
-            f"جزئیات: `{type(exc).__name__}: {exc}`"
-        )
-        return
-
-    if not gifs:
-        if tags:
-            await event.reply(
-                "ℹ️ گیفی با تمام تگ‌های انتخاب‌شده پیدا نشد.\n"
-                "تگ‌ها باید دقیقاً با تگ‌های ثبت‌شده یکسان باشند."
-            )
-        else:
-            await event.reply(
-                "ℹ️ بانک مرکزی گیف‌ها خالی است."
-            )
-        return
-
-    # تبدیل ردیف‌های دیتابیس به دادهٔ قابل ذخیره در JSON
-    gifs_payload = [
-        {
-            "doc_id": int(gif["doc_id"]),
-            "access_hash": int(gif["access_hash"]),
-        }
-        for gif in gifs
-    ]
+    no_gifs_message = None
+    gifs_payload = []
+    job_id = None
 
     try:
-        notify_chat_id = int(
-            getattr(event, "chat_id", 0) or 0
-        )
+        # انتخاب گیف و ثبت کار ارسال برای یک مقصد
+        # پشت سر هم انجام می‌شوند تا دو دستور هم‌زمان
+        # یک گیف را به‌عنوان گیف جدید انتخاب نکنند.
+        async with _get_send_lock(self, target_id):
 
-        job_id = await sender.schedule_send_job(
-            self,
-            target_id=target_id,
-            notify_chat_id=notify_chat_id,
-            gifs=gifs_payload,
-            interval_seconds=interval_seconds,
-        )
+            allow_repeats = await memory.get_chat_repeats(
+                self.db,
+                target_id,
+            )
+
+            if allow_repeats:
+                # رفتار قبلی: انتخاب تصادفی بدون محدودیت سابقه
+                gifs = await memory.get_random_gifs(
+                    self.db,
+                    target_count,
+                    tags=tags,
+                )
+
+            else:
+                # گیف‌های استفاده‌شده در کارهای فعال را رزرو می‌کنیم.
+                reserved_gifs = await memory.get_reserved_gifs(
+                    self.db,
+                    target_id,
+                )
+
+                # فقط گیف‌های جدید برای این مقصد
+                gifs = await memory.get_random_gifs_for_chat(
+                    self.db,
+                    target_count,
+                    chat_id=target_id,
+                    tags=tags,
+                    reserved_gifs=reserved_gifs,
+                )
+
+            if not gifs:
+                if not allow_repeats:
+                    no_gifs_message = (
+                        "ℹ️ گیف واجد شرایطی برای ارسال باقی نمانده است.\n"
+                        "ممکن است همهٔ گیف‌های مطابق تگ‌ها قبلاً "
+                        "در این مقصد ارسال شده باشند یا برای ارسال "
+                        "فعال دیگری رزرو شده باشند."
+                    )
+
+                elif tags:
+                    no_gifs_message = (
+                        "ℹ️ گیفی با تمام تگ‌های انتخاب‌شده پیدا نشد.\n"
+                        "تگ‌ها باید دقیقاً با تگ‌های ثبت‌شده یکسان باشند."
+                    )
+
+                else:
+                    no_gifs_message = (
+                        "ℹ️ بانک مرکزی گیف‌ها خالی است."
+                    )
+
+            else:
+                # تبدیل ردیف‌های دیتابیس به دادهٔ قابل ذخیره در JSON
+                gifs_payload = [
+                    {
+                        "doc_id": int(gif["doc_id"]),
+                        "access_hash": int(gif["access_hash"]),
+                    }
+                    for gif in gifs
+                ]
+
+                notify_chat_id = int(
+                    getattr(event, "chat_id", 0) or 0
+                )
+
+                # ثبت کار در دیتابیس و شروع ارسال
+                # قبل از آزادشدن قفل انجام می‌شود.
+                job_id = await sender.schedule_send_job(
+                    self,
+                    target_id=target_id,
+                    notify_chat_id=notify_chat_id,
+                    gifs=gifs_payload,
+                    interval_seconds=interval_seconds,
+                )
 
     except Exception as exc:
         await event.reply(
             "❌ ساخت کار ارسال زمان‌بندی‌شده ناموفق بود.\n"
             f"جزئیات: `{type(exc).__name__}: {exc}`"
+        )
+        return
+
+    if no_gifs_message:
+        await event.reply(no_gifs_message)
+        return
+
+    if job_id is None:
+        await event.reply(
+            "❌ کار ارسال گیف ایجاد نشد."
         )
         return
 

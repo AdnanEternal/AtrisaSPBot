@@ -5,7 +5,8 @@ import time
 TABLE_NAME = "all_saved_gifs"
 TAGS_TABLE_NAME = "gif_tags"
 SEND_JOBS_TABLE_NAME = "gif_send_jobs"
-
+GIF_CHAT_SETTINGS_TABLE_NAME = "gif_chat_settings"
+GIF_SENT_HISTORY_TABLE_NAME = "gif_sent_history"
 
 async def initialize(db) -> None:
     """ساخت بانک گیف‌ها، تگ‌ها و جدول ارسال‌های زمان‌بندی‌شده."""
@@ -48,6 +49,29 @@ async def initialize(db) -> None:
             "created_at": "REAL NOT NULL",
         },
         indexes=["status"],
+    )
+
+        # تنظیمات مستقل تکرار گیف برای هر مقصد
+    await db.create_table(
+        GIF_CHAT_SETTINGS_TABLE_NAME,
+        columns={
+            "chat_id": "INTEGER NOT NULL",
+            "allow_repeats": "INTEGER NOT NULL DEFAULT 1",
+        },
+        unique=[["chat_id"]],
+    )
+
+    # سابقهٔ گیف‌هایی که با موفقیت در هر مقصد ارسال شده‌اند
+    await db.create_table(
+        GIF_SENT_HISTORY_TABLE_NAME,
+        columns={
+            "chat_id": "INTEGER NOT NULL",
+            "doc_id": "INTEGER NOT NULL",
+            "access_hash": "INTEGER NOT NULL",
+            "sent_at": "REAL NOT NULL",
+        },
+        unique=[["chat_id", "doc_id", "access_hash"]],
+        indexes=["chat_id"],
     )
 
 
@@ -273,6 +297,250 @@ async def get_random_gifs(
 
     return list(selected.values())[:target_count]
 
+
+async def get_chat_repeats(
+    db,
+    chat_id: int,
+) -> bool:
+    """بررسی مجازبودن ارسال گیف تکراری در یک مقصد."""
+
+    await initialize(db)
+
+    row = await db.fetchone(
+        f"""
+        SELECT allow_repeats
+        FROM {GIF_CHAT_SETTINGS_TABLE_NAME}
+        WHERE chat_id = ?
+        """,
+        (int(chat_id),),
+    )
+
+    # رفتار پیش‌فرض همان رفتار فعلی است.
+    if row is None:
+        return True
+
+    return bool(int(row["allow_repeats"]))
+
+
+async def set_chat_repeats(
+    db,
+    chat_id: int,
+    allow_repeats: bool,
+) -> None:
+    """ثبت یا تغییر تنظیم تکرار گیف برای یک مقصد."""
+
+    await initialize(db)
+
+    await db.execute(
+        f"""
+        INSERT INTO {GIF_CHAT_SETTINGS_TABLE_NAME}
+            (chat_id, allow_repeats)
+        VALUES (?, ?)
+        ON CONFLICT(chat_id)
+        DO UPDATE SET
+            allow_repeats = excluded.allow_repeats
+        """,
+        (
+            int(chat_id),
+            1 if allow_repeats else 0,
+        ),
+    )
+
+
+async def remember_sent_gif(
+    db,
+    chat_id: int,
+    doc_id: int,
+    access_hash: int,
+) -> None:
+    """ثبت یک گیف در سابقهٔ ارسال موفق یک مقصد."""
+
+    await initialize(db)
+
+    await db.insert(
+        GIF_SENT_HISTORY_TABLE_NAME,
+        {
+            "chat_id": int(chat_id),
+            "doc_id": int(doc_id),
+            "access_hash": int(access_hash),
+            "sent_at": time.time(),
+        },
+        or_ignore=True,
+    )
+
+
+async def get_reserved_gifs(
+    db,
+    chat_id: int,
+) -> set[tuple[int, int]]:
+    """
+    گیف‌های رزروشده برای ارسال‌های فعال یک مقصد را برمی‌گرداند.
+
+    فقط گیف‌هایی که هنوز نوبت ارسالشان نگذشته است رزرو محسوب می‌شوند.
+    """
+
+    await initialize(db)
+
+    rows = await db.fetchall(
+        f"""
+        SELECT next_index, gifs_json
+        FROM {SEND_JOBS_TABLE_NAME}
+        WHERE target_id = ?
+          AND status = 'active'
+        """,
+        (int(chat_id),),
+    )
+
+    reserved = set()
+
+    for row in rows:
+        try:
+            gifs = json.loads(row["gifs_json"])
+            next_index = max(
+                0,
+                int(row["next_index"] or 0),
+            )
+
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+        if not isinstance(gifs, list):
+            continue
+
+        for gif in gifs[next_index:]:
+            if not isinstance(gif, dict):
+                continue
+
+            try:
+                doc_id = int(gif["doc_id"])
+                access_hash = int(gif["access_hash"])
+
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            reserved.add(
+                (doc_id, access_hash)
+            )
+
+    return reserved
+
+
+async def get_random_gifs_for_chat(
+    db,
+    count: int,
+    chat_id: int,
+    tags=None,
+    reserved_gifs=None,
+) -> list:
+    """
+    انتخاب گیف‌های تصادفی که قبلاً در این مقصد ارسال نشده‌اند
+    و برای ارسال فعال دیگری نیز رزرو نشده‌اند.
+
+    در صورت ارسال چند تگ، همهٔ تگ‌های خواسته‌شده باید وجود داشته باشند.
+    """
+
+    await initialize(db)
+
+    count = max(0, int(count))
+
+    if count == 0:
+        return []
+
+    chat_id = int(chat_id)
+
+    normalized_tags = []
+    seen_tags = set()
+
+    for tag in tags or []:
+        if not isinstance(tag, str):
+            continue
+
+        tag = tag.strip()
+
+        if tag and tag not in seen_tags:
+            seen_tags.add(tag)
+            normalized_tags.append(tag)
+
+    # فقط گیف‌هایی که در مقصد موردنظر قبلاً ارسال نشده‌اند.
+    if normalized_tags:
+        placeholders = ", ".join(
+            "?" for _ in normalized_tags
+        )
+
+        query = f"""
+            SELECT
+                g.doc_id,
+                g.access_hash
+            FROM {TABLE_NAME} AS g
+            WHERE (
+                SELECT COUNT(DISTINCT t.tag)
+                FROM {TAGS_TABLE_NAME} AS t
+                WHERE t.doc_id = g.doc_id
+                  AND t.access_hash = g.access_hash
+                  AND t.tag IN ({placeholders})
+            ) = ?
+            AND NOT EXISTS (
+                SELECT 1
+                FROM {GIF_SENT_HISTORY_TABLE_NAME} AS h
+                WHERE h.chat_id = ?
+                  AND h.doc_id = g.doc_id
+                  AND h.access_hash = g.access_hash
+            )
+            ORDER BY RANDOM()
+        """
+
+        params = (
+            tuple(normalized_tags)
+            + (
+                len(normalized_tags),
+                chat_id,
+            )
+        )
+
+    else:
+        query = f"""
+            SELECT
+                g.doc_id,
+                g.access_hash
+            FROM {TABLE_NAME} AS g
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM {GIF_SENT_HISTORY_TABLE_NAME} AS h
+                WHERE h.chat_id = ?
+                  AND h.doc_id = g.doc_id
+                  AND h.access_hash = g.access_hash
+            )
+            ORDER BY RANDOM()
+        """
+
+        params = (chat_id,)
+
+    rows = await db.fetchall(
+        query,
+        params,
+    )
+
+    reserved_keys = set(
+        reserved_gifs or ()
+    )
+
+    selected = []
+
+    for row in rows:
+        key = (
+            int(row["doc_id"]),
+            int(row["access_hash"]),
+        )
+
+        if key in reserved_keys:
+            continue
+
+        selected.append(row)
+
+        if len(selected) >= count:
+            break
+
+    return selected
 
 async def create_send_job(
     db,
