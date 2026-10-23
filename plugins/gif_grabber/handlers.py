@@ -839,21 +839,21 @@ async def send_gifs(
 
             if allow_repeats:
                 # رفتار قبلی: انتخاب تصادفی بدون محدودیت سابقه
-                gifs = await memory.get_random_gifs(
+                gifs = await memory.get_gifs(
                     self.db,
                     target_count,
                     tags=tags,
                 )
 
             else:
-                # گیف‌های استفاده‌شده در کارهای فعال را رزرو می‌کنیم.
-                reserved_gifs = await memory.get_reserved_gifs(
-                    self.db,
+                # گیف‌های رزروشده در ارسال‌های فعال این اجرا
+                reserved_gifs = sender.get_reserved_gifs(
+                    self,
                     target_id,
                 )
 
-                # فقط گیف‌های جدید برای این مقصد
-                gifs = await memory.get_random_gifs_for_chat(
+                # انتخاب مستقیم گیف‌های ارسال‌نشده
+                gifs = await memory.get_gifs_for_chat(
                     self.db,
                     target_count,
                     chat_id=target_id,
@@ -897,7 +897,7 @@ async def send_gifs(
 
                 # ثبت کار در دیتابیس و شروع ارسال
                 # قبل از آزادشدن قفل انجام می‌شود.
-                job_id = await sender.schedule_send_job(
+                job_id = await sender.start_send_job(
                     self,
                     target_id=target_id,
                     notify_chat_id=notify_chat_id,

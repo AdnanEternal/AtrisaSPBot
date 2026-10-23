@@ -1,8 +1,6 @@
-"""اجرای ارسال‌های زمان‌بندی‌شدهٔ گیف."""
+"""ارسال گیف با taskهای موقت و بدون جاب پایدار."""
 
 import asyncio
-import json
-import time
 
 from splusthon.tl.functions.messages import SendMediaRequest
 from splusthon.tl import types
@@ -15,17 +13,14 @@ async def _resolve_target_peer(
     client,
     target_id: int,
 ):
-    """پیداکردن مقصد از گفتگوها با حفظ پشتیبانی از UID قدیمی."""
+    """پیداکردن مقصد از گفتگوهای قابل‌دسترسی."""
 
     target_id = int(target_id)
 
     me = await client.get_me()
     my_uid = getattr(me, "id", None)
 
-    if (
-        my_uid is not None
-        and target_id == int(my_uid)
-    ):
+    if my_uid is not None and target_id == int(my_uid):
         return "me"
 
     dialogs = await client.get_dialogs()
@@ -57,7 +52,6 @@ async def _resolve_target_peer(
             getattr(dialog, "is_channel", False)
         )
 
-        # حفظ رفتار قبلی برای UIDهایی که در گفتگوها هستند.
         if dialog_id == target_id:
             return await client.get_input_entity(entity)
 
@@ -82,12 +76,10 @@ async def _resolve_target_peer(
                 })
 
                 if is_channel:
-                    # قالب رایج -100<ID>
                     candidates.add(
                         -int(f"100{entity_id}")
                     )
 
-                    # قالب شناسهٔ کانال SPlusthon
                     candidates.add(
                         -(1_000_000_000_000 + entity_id)
                     )
@@ -95,7 +87,6 @@ async def _resolve_target_peer(
             if target_id in candidates:
                 return await client.get_input_entity(entity)
 
-    # حفظ پشتیبانی از UID خصوصی که در فهرست گفتگوها نیست.
     if target_id > 0:
         return await client.get_input_entity(target_id)
 
@@ -110,7 +101,7 @@ async def _notify(
     chat_id: int,
     message: str,
 ) -> None:
-    """ارسال گزارش نهایی به گفتگویی که دستور از آن آمده است."""
+    """ارسال گزارش به گفتگویی که دستور از آن آمده است."""
 
     if not chat_id:
         print(message)
@@ -121,18 +112,61 @@ async def _notify(
             int(chat_id),
             message,
         )
+
     except Exception as exc:
         print(
-            "⚠️ GIF Grabber - ارسال گزارش job ناموفق بود: "
+            "⚠️ GIF Grabber - ارسال گزارش ناموفق بود: "
             f"{exc}\n{message}"
         )
 
 
-def _spawn(
+def get_reserved_gifs(
     self,
-    job_id: int,
-) -> None:
-    """شروع یک کار در پس‌زمینه، بدون اجرای تکراری همان job."""
+    target_id: int,
+) -> set[tuple[int, int]]:
+    """دریافت گیف‌های رزروشده در ارسال‌های فعال همین اجرا."""
+
+    target_id = int(target_id)
+
+    jobs = getattr(
+        self,
+        "_gif_send_jobs",
+        {},
+    )
+
+    reserved = set()
+
+    for job in jobs.values():
+        if int(job["target_id"]) != target_id:
+            continue
+
+        task = job.get("task")
+
+        if task is None or task.done():
+            continue
+
+        next_index = int(job["next_index"])
+
+        for gif in job["gifs"][next_index:]:
+            reserved.add((
+                int(gif["doc_id"]),
+                int(gif["access_hash"]),
+            ))
+
+    return reserved
+
+
+async def start_send_job(
+    self,
+    *,
+    target_id: int,
+    notify_chat_id: int,
+    gifs: list[dict],
+    interval_seconds: int,
+) -> int:
+    """شروع یک ارسال موقت، بدون ثبت جاب در دیتابیس."""
+
+    await memory.initialize(self.db)
 
     tasks = getattr(
         self,
@@ -144,128 +178,125 @@ def _spawn(
         tasks = {}
         self._gif_send_tasks = tasks
 
-    existing = tasks.get(int(job_id))
+    jobs = getattr(
+        self,
+        "_gif_send_jobs",
+        None,
+    )
 
-    if existing is not None and not existing.done():
-        return
+    if jobs is None:
+        jobs = {}
+        self._gif_send_jobs = jobs
+
+    job_id = int(
+        getattr(self, "_gif_send_next_id", 1)
+    )
+
+    self._gif_send_next_id = job_id + 1
+
+    job = {
+        "target_id": int(target_id),
+        "notify_chat_id": int(notify_chat_id),
+        "gifs": [
+            {
+                "doc_id": int(gif["doc_id"]),
+                "access_hash": int(gif["access_hash"]),
+            }
+            for gif in gifs
+        ],
+        "interval_seconds": max(
+            0,
+            int(interval_seconds),
+        ),
+        "next_index": 0,
+        "task": None,
+    }
+
+    if not job["gifs"]:
+        raise ValueError(
+            "فهرست گیف‌های انتخاب‌شده خالی است."
+        )
+
+    jobs[job_id] = job
 
     task = asyncio.create_task(
-        _run_send_job(self, int(job_id)),
+        _run_send_job(self, job_id),
         name=f"gif-send-{job_id}",
     )
 
-    tasks[int(job_id)] = task
+    job["task"] = task
+    tasks[job_id] = task
 
     def remove_finished(
         done_task,
         *,
-        current_job_id=int(job_id),
+        current_job_id=job_id,
+        current_job=job,
     ):
         if tasks.get(current_job_id) is done_task:
             tasks.pop(current_job_id, None)
 
+        if jobs.get(current_job_id) is current_job:
+            jobs.pop(current_job_id, None)
+
     task.add_done_callback(remove_finished)
 
-
-async def schedule_send_job(
-    self,
-    *,
-    target_id: int,
-    notify_chat_id: int,
-    gifs: list[dict],
-    interval_seconds: int,
-) -> int:
-    """ثبت job در دیتابیس و شروع اجرای آن."""
-
-    await memory.initialize(self.db)
-
-    job_id = await memory.create_send_job(
-        self.db,
-        target_id=target_id,
-        notify_chat_id=notify_chat_id,
-        gifs=gifs,
-        interval_seconds=interval_seconds,
-    )
-
-    _spawn(self, job_id)
-
     return job_id
-
-
-async def resume_send_jobs(self) -> int:
-    """بازیابی کارهای فعال ذخیره‌شده در دیتابیس."""
-
-    await memory.initialize(self.db)
-
-    jobs = await memory.get_active_send_jobs(
-        self.db
-    )
-
-    for row in jobs:
-        _spawn(self, int(row["job_id"]))
-
-    return len(jobs)
 
 
 async def stop_send_jobs(
     self,
     job_id: int | None = None,
 ) -> list[int]:
-    """توقف یک کار مشخص یا همهٔ کارهای فعال."""
+    """
+    توقف یک ارسال جاری یا همهٔ ارسال‌های جاری.
 
-    if job_id is None:
-        rows = await memory.get_active_send_jobs(
-            self.db
-        )
-    else:
-        row = await memory.get_send_job(
-            self.db,
-            int(job_id),
-        )
+    این اطلاعات فقط در حافظه‌اند؛ جابی بعد از ری‌استارت
+    برای بازیابی وجود نخواهد داشت.
+    """
 
-        rows = [
-            row
-        ] if (
-            row is not None
-            and row["status"] == "active"
-        ) else []
-
-    stopped_ids = []
-
-    tasks = getattr(
+    jobs = getattr(
         self,
-        "_gif_send_tasks",
+        "_gif_send_jobs",
         {},
     )
 
-    for row in rows:
-        current_id = int(row["job_id"])
+    if job_id is None:
+        candidates = list(jobs.items())
 
-        was_active = await memory.cancel_active_send_job(
-            self.db,
-            current_id,
+    else:
+        job = jobs.get(int(job_id))
+
+        candidates = (
+            [(int(job_id), job)]
+            if job is not None
+            else []
         )
 
-        if not was_active:
+    stopped_ids = []
+    tasks_to_wait = []
+
+    for current_id, job in candidates:
+        task = job.get("task")
+
+        if task is None or task.done():
             continue
 
-        stopped_ids.append(current_id)
+        stopped_ids.append(int(current_id))
+        tasks_to_wait.append(task)
+        task.cancel()
 
-        task = tasks.get(current_id)
-
-        if task is not None and not task.done():
-            task.cancel()
+    if tasks_to_wait:
+        await asyncio.gather(
+            *tasks_to_wait,
+            return_exceptions=True,
+        )
 
     return stopped_ids
 
 
 async def shutdown_send_tasks(self) -> None:
-    """
-    توقف taskهای فعلی هنگام غیرفعال‌شدن پلاگین.
-
-    وضعیت active در دیتابیس باقی می‌ماند تا هنگام فعال‌شدن مجدد
-    پلاگین یا اجرای دوبارهٔ برنامه، کارها قابل بازیابی باشند.
-    """
+    """لغو ارسال‌های جاری هنگام خاموش‌شدن پلاگین."""
 
     tasks = list(
         getattr(self, "_gif_send_tasks", {}).values()
@@ -286,253 +317,167 @@ async def _run_send_job(
     self,
     job_id: int,
 ) -> None:
-    """اجرای یک job؛ هر بار فقط یک گیف ارسال می‌شود."""
+    """اجرای ارسال از فهرست انتخاب‌شده، بدون ذخیرهٔ پیشرفت."""
 
-    notify_chat_id = 0
+    jobs = getattr(
+        self,
+        "_gif_send_jobs",
+        {},
+    )
+
+    job = jobs.get(int(job_id))
+
+    if job is None:
+        return
+
+    target_id = int(job["target_id"])
+    notify_chat_id = int(job["notify_chat_id"])
+    gifs = job["gifs"]
+
+    interval_seconds = int(
+        job["interval_seconds"]
+    )
+
     sent_count = 0
     failed_count = 0
 
     try:
-        row = await memory.get_send_job(
-            self.db,
-            job_id,
+        target_peer = await _resolve_target_peer(
+            self.client,
+            target_id,
         )
 
-        if row is None or row["status"] != "active":
-            return
-
-        notify_chat_id = int(
-            row["notify_chat_id"] or 0
-        )
-
-        target_id = int(row["target_id"])
-
-        interval_seconds = max(
-            0,
-            int(row["interval_seconds"]),
-        )
-
-        sent_count = int(row["sent_count"])
-        failed_count = int(row["failed_count"])
-
-        gifs = json.loads(row["gifs_json"])
-
-        if not isinstance(gifs, list) or not gifs:
-            raise ValueError(
-                "فهرست گیف‌های این job خالی یا نامعتبر است."
-            )
-
-        target_peer = None
-
-        while True:
-            row = await memory.get_send_job(
-                self.db,
-                job_id,
-            )
-
-            if row is None or row["status"] != "active":
-                return
-
-            next_index = int(row["next_index"])
-
-            if next_index >= len(gifs):
-                await memory.update_send_job(
-                    self.db,
-                    job_id,
-                    status="completed",
-                    next_run_at=0,
-                )
-                break
-
-            # زمان اجرای بعدی در دیتابیس ذخیره شده است.
-            due_at = float(row["next_run_at"] or 0)
-            delay = due_at - time.time()
-
-            if delay > 0:
-                await asyncio.sleep(delay)
-
-            # ممکن است هنگام انتظار، دستور توقف اجرا شده باشد.
-            row = await memory.get_send_job(
-                self.db,
-                job_id,
-            )
-
-            if row is None or row["status"] != "active":
-                return
-
-            next_index = int(row["next_index"])
-
-            if next_index >= len(gifs):
-                continue
-
-            if target_peer is None:
-                target_peer = await _resolve_target_peer(
-                    self.client,
-                    target_id,
-                )
-
-            gif = gifs[next_index]
-
+        for index, gif in enumerate(gifs):
             document_id = int(gif["doc_id"])
             access_hash = int(gif["access_hash"])
 
-            try:
-                input_document = types.InputDocument(
-                    id=document_id,
-                    access_hash=access_hash,
-                    file_reference=b"",
-                )
+            # تا وقتی ارسال موفق یا ناموفق مشخص نشده،
+            # گیف جاری در مجموعهٔ رزروشده باقی می‌ماند.
+            job["next_index"] = index
 
-                await self.client(
-                    SendMediaRequest(
-                        peer=target_peer,
-                        media=types.InputMediaDocument(
-                            id=input_document,
-                        ),
-                        message="",
-                    )
-                )
-
-                # این گیف واقعاً ارسال شده است؛
-                # قبل از جلو بردن next_index سابقه‌اش را ثبت می‌کنیم.
+            while True:
                 try:
-                    await memory.remember_sent_gif(
-                        self.db,
-                        target_id,
-                        document_id,
-                        access_hash,
+                    input_document = types.InputDocument(
+                        id=document_id,
+                        access_hash=access_hash,
+                        file_reference=b"",
                     )
 
-                except Exception as history_exc:
-                    # خطای ثبت تاریخچه نباید باعث شود
-                    # ارسال موفق را به‌اشتباه ارسال ناموفق بدانیم.
+                    await self.client(
+                        SendMediaRequest(
+                            peer=target_peer,
+                            media=types.InputMediaDocument(
+                                id=input_document,
+                            ),
+                            message="",
+                        )
+                    )
+
+                except FloodWaitError as exc:
+                    wait_seconds = max(
+                        1,
+                        int(
+                            getattr(exc, "seconds", 1) or 1
+                        ),
+                    )
+
                     print(
-                        "❌ GIF Grabber - ثبت سابقهٔ ارسال گیف "
-                        f"{document_id} برای مقصد {target_id} ناموفق بود: "
-                        f"{history_exc}"
+                        "⚠️ GIF Grabber - محدودیت ارسال؛ "
+                        f"گیف {document_id} پس از "
+                        f"{wait_seconds} ثانیه دوباره امتحان می‌شود."
                     )
 
-                sent_count += 1
+                    await asyncio.sleep(wait_seconds)
+                    continue
 
-                print(
-                    f"✅ GIF Grabber - گیف {document_id} "
-                    f"به {target_id} ارسال شد "
-                    f"(job #{job_id})."
-                )
+                except asyncio.CancelledError:
+                    raise
 
-                print(
-                    f"✅ GIF Grabber - گیف {document_id} "
-                    f"به {target_id} ارسال شد "
-                    f"(job #{job_id})."
-                )
+                except Exception as exc:
+                    failed_count += 1
 
-            except FloodWaitError as exc:
-                # در صورت محدودیت سرور، همان گیف دوباره امتحان می‌شود
-                # پس از گذشت زمان اعلام‌شده.
-                wait_seconds = max(
-                    1,
-                    int(getattr(exc, "seconds", 1) or 1),
-                )
+                    print(
+                        "❌ GIF Grabber - ارسال گیف "
+                        f"{document_id} به مقصد {target_id} "
+                        f"ناموفق بود (ارسال #{job_id}): {exc}"
+                    )
 
-                await memory.update_send_job(
-                    self.db,
-                    job_id,
-                    next_run_at=time.time() + wait_seconds,
-                )
+                    break
 
-                print(
-                    f"⚠️ GIF Grabber - محدودیت ارسال در "
-                    f"job #{job_id}؛ تلاش دوباره پس از "
-                    f"{wait_seconds} ثانیه."
-                )
+                else:
+                    # ثبت تاریخچه بعد از تأیید موفقیت ارسال
+                    try:
+                        await memory.remember_sent_gif(
+                            self.db,
+                            target_id,
+                            document_id,
+                            access_hash,
+                        )
 
-                continue
+                    except Exception as history_exc:
+                        raise RuntimeError(
+                            "گیف ارسال شده، اما ثبت سابقهٔ آن "
+                            f"ناموفق بود: {document_id}؛ "
+                            f"{history_exc}"
+                        ) from history_exc
 
-            except Exception as exc:
-                failed_count += 1
+                    sent_count += 1
 
-                print(
-                    f"❌ GIF Grabber - ارسال گیف {document_id} "
-                    f"به {target_id} ناموفق بود "
-                    f"(job #{job_id}): {exc}"
-                )
+                    print(
+                        f"✅ GIF Grabber - گیف {document_id} "
+                        f"به {target_id} ارسال شد "
+                        f"(ارسال #{job_id})."
+                    )
 
-            # پس از هر تلاش، موقعیت بعدی و آمار ذخیره می‌شوند.
-            next_index += 1
-            completed = next_index >= len(gifs)
+                    break
 
-            await memory.update_send_job(
-                self.db,
-                job_id,
-                next_index=next_index,
-                sent_count=sent_count,
-                failed_count=failed_count,
-                next_run_at=(
-                    time.time() + interval_seconds
-                    if not completed
-                    else 0
-                ),
-                status=(
-                    "completed"
-                    if completed
-                    else "active"
-                ),
-            )
+            # این گیف دیگر در فهرست رزرو باقی‌مانده نیست.
+            job["next_index"] = index + 1
 
-            if completed:
-                report = (
-                    f"📤 ارسال گیف تمام شد (job #{job_id}).\n"
-                    f"🎯 مقصد: {target_id}\n"
-                    f"🎞️ تعداد انتخاب‌شده: {len(gifs)}\n"
-                    f"✅ ارسال موفق: {sent_count}\n"
-                    f"❌ ارسال ناموفق: {failed_count}"
-                )
+            if (
+                interval_seconds > 0
+                and index + 1 < len(gifs)
+            ):
+                await asyncio.sleep(interval_seconds)
 
-                await _notify(
-                    self.client,
-                    notify_chat_id,
-                    report,
-                )
+        report = (
+            f"📤 ارسال گیف تمام شد (شناسهٔ موقت #{job_id}).\n"
+            f"🎯 مقصد: {target_id}\n"
+            f"🎞️ تعداد انتخاب‌شده: {len(gifs)}\n"
+            f"✅ ارسال موفق: {sent_count}\n"
+            f"❌ ارسال ناموفق: {failed_count}"
+        )
 
-                return
+        await _notify(
+            self.client,
+            notify_chat_id,
+            report,
+        )
 
     except asyncio.CancelledError:
-        # توقف دستی، وضعیت را قبلاً cancelled می‌کند.
-        # در زمان خاموش‌شدن پلاگین، status active می‌ماند
-        # تا ارسال بعداً قابل ادامه‌دادن باشد.
+        print(
+            f"🛑 GIF Grabber - ارسال #{job_id} متوقف شد."
+        )
         raise
 
     except Exception as exc:
         print(
-            f"❌ GIF Grabber - اجرای job #{job_id} شکست خورد: {exc}"
+            f"❌ GIF Grabber - ارسال #{job_id} متوقف شد: {exc}"
         )
 
-        try:
-            row = await memory.get_send_job(
-                self.db,
-                job_id,
-            )
+        report = (
+            f"⚠️ ارسال گیف #{job_id} متوقف شد.\n"
+            f"🎯 مقصد: {target_id}\n"
+            f"✅ ارسال موفق ثبت‌شده: {sent_count}\n"
+            f"❌ ارسال ناموفق: {failed_count}\n"
+            f"جزئیات: {exc}\n\n"
+            "برای تلاش دوباره، دستور ارسال را مجدداً اجرا کن. "
+            "گیف‌هایی که در تاریخچه ثبت شده‌اند، در حالت منع "
+            "تکرار دوباره انتخاب نخواهند شد."
+        )
 
-            if row is not None and row["status"] == "active":
-                await memory.update_send_job(
-                    self.db,
-                    job_id,
-                    status="failed",
-                )
-
-                notify_chat_id = int(
-                    row["notify_chat_id"] or 0
-                )
-
-            await _notify(
-                self.client,
-                notify_chat_id,
-                f"❌ ارسال زمان‌بندی‌شدهٔ گیف #{job_id} متوقف شد.\n"
-                f"جزئیات: {exc}",
-            )
-
-        except Exception as notify_exc:
-            print(
-                f"⚠️ گزارش خطای job #{job_id} ارسال نشد: "
-                f"{notify_exc}"
-            )
+        await _notify(
+            self.client,
+            notify_chat_id,
+            report,
+        )
