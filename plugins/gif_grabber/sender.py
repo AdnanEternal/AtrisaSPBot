@@ -163,6 +163,7 @@ async def start_send_job(
     notify_chat_id: int,
     gifs: list[dict],
     interval_seconds: int,
+    caption: str = "",
 ) -> int:
     """شروع یک ارسال موقت، بدون ثبت جاب در دیتابیس."""
 
@@ -208,6 +209,7 @@ async def start_send_job(
             0,
             int(interval_seconds),
         ),
+        "caption": str(caption),
         "next_index": 0,
         "task": None,
     }
@@ -337,6 +339,10 @@ async def _run_send_job(
     interval_seconds = int(
         job["interval_seconds"]
     )
+    
+    caption = str(
+        job.get("caption") or ""
+    )
 
     sent_count = 0
     failed_count = 0
@@ -369,7 +375,7 @@ async def _run_send_job(
                             media=types.InputMediaDocument(
                                 id=input_document,
                             ),
-                            message="",
+                            message=caption,
                         )
                     )
 

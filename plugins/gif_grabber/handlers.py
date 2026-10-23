@@ -772,13 +772,25 @@ async def send_gifs(
         data = _parse_dict_command(
             args_text,
             required_keys={"value", "id"},
-            allowed_keys={"value", "id", "delay", "tags"},
+            allowed_keys={
+                "value",
+                "id",
+                "delay",
+                "tags",
+                "caption",
+            },
         )
 
         requested_count = data["value"]
         target_id = data["id"]
         delay = data.get("delay", 0)
         tags = _parse_gif_tags(data.get("tags"))
+        caption = data.get("caption", "")
+
+        if not isinstance(caption, str):
+            raise ValueError(
+                "caption باید متن باشد."
+            )
 
         if (
             isinstance(requested_count, bool)
@@ -909,6 +921,7 @@ async def send_gifs(
                     notify_chat_id=notify_chat_id,
                     gifs=gifs_payload,
                     interval_seconds=interval_seconds,
+                    caption=caption,
                 )
 
     except Exception as exc:
