@@ -23,6 +23,77 @@ MAX_SEND_GIFS_PER_COMMAND = 5000
 GIF_DELETE_CONCURRENCY = 5
 
 
+
+def _parse_dict_command(
+    args_text: str,
+    *,
+    required_keys: set[str],
+    allowed_keys: set[str],
+) -> dict:
+    """خواندن و اعتبارسنجی دیکشنری ورودی دستور."""
+
+    try:
+        data = ast.literal_eval(args_text.strip())
+    except (ValueError, SyntaxError):
+        raise ValueError(
+            'ورودی باید دیکشنری معتبر باشد؛ مثال: '
+            '{"value": 25, "id": -100, "tags": ["لاو"]}'
+        )
+
+    if not isinstance(data, dict):
+        raise ValueError("ورودی باید یک دیکشنری پایتونی باشد.")
+
+    unknown_keys = set(data) - allowed_keys
+    if unknown_keys:
+        raise ValueError(
+            "کلیدهای ناشناخته: "
+            + ", ".join(map(str, unknown_keys))
+        )
+
+    missing_keys = required_keys - set(data)
+    if missing_keys:
+        raise ValueError(
+            "کلیدهای ضروری وارد نشده‌اند: "
+            + ", ".join(sorted(missing_keys))
+        )
+
+    if any(not isinstance(key, str) for key in data):
+        raise ValueError("نام تمام کلیدها باید رشته باشد.")
+
+    return data
+
+
+def _parse_gif_tags(value) -> list[str] | None:
+    """اعتبارسنجی تگ‌ها؛ نبودن tags یعنی بدون فیلتر تگ."""
+
+    if value is None:
+        return None
+
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(tag, str) for tag in value)
+    ):
+        raise ValueError(
+            'کلید tags باید فهرستی از متن باشد؛ مثال: ["لاو"]'
+        )
+
+    tags = list(dict.fromkeys(
+        tag.strip()
+        for tag in value
+        if tag.strip()
+    ))
+
+    if not tags:
+        raise ValueError(
+            "فهرست tags نمی‌تواند خالی باشد؛ "
+            "برای ارسال بدون فیلتر تگ، کلید tags را حذف کن."
+        )
+
+    return tags
+
+
+
+
 @command(
     name="آمار گیف ها",
     permission="owner",
@@ -253,61 +324,52 @@ async def fetch_gifs(
 ) -> None:
 
 
-    args_text = getattr(event, "args_text", "").strip()
-
-    match = re.fullmatch(
-        r"(\d+)\s+(-?\d+)(?:\s+(.+))?",
-        args_text,
-        re.DOTALL,
-    )
-
-    if not match:
-        await event.reply(
-            "❌ قالب دستور نامعتبر است.\n"
-            "مثال بدون تگ:\n"
-            "!دریافت 100 -100\n\n"
-            "مثال همراه تگ:\n"
-            '!دریافت 100 -100 ["بانمک", "کیوت", "نینی"]'
-        )
-        return
+    args_text = getattr(
+        event,
+        "args_text",
+        "",
+    ).strip()
 
     try:
-        requested_count = int(match.group(1))
-        channel_id = int(match.group(2))
-    except (TypeError, ValueError):
-        await event.reply(
-            "❌ تعداد گیف‌ها و شناسهٔ کانال باید عدد باشند."
+        data = _parse_dict_command(
+            args_text,
+            required_keys={"value", "id"},
+            allowed_keys={"value", "id", "tags"},
         )
-        return
 
-    tags = None
-    tags_text = match.group(3)
-
-    if tags_text:
-        try:
-            parsed_tags = ast.literal_eval(tags_text)
-        except (ValueError, SyntaxError):
-            await event.reply(
-                "❌ تگ‌ها باید به‌شکل یک فهرست معتبر باشند.\n"
-                'مثال: ["بانمک", "کیوت", "نینی"]'
-            )
-            return
+        requested_count = data["value"]
+        channel_id = data["id"]
+        tags = _parse_gif_tags(data.get("tags"))
 
         if (
-            not isinstance(parsed_tags, list)
-            or any(not isinstance(tag, str) for tag in parsed_tags)
+            isinstance(requested_count, bool)
+            or not isinstance(requested_count, int)
+            or requested_count <= 0
         ):
-            await event.reply(
-                "❌ تگ‌ها باید فهرستی از رشته‌ها باشند.\n"
-                'مثال: ["بانمک", "کیوت", "نینی"]'
+            raise ValueError(
+                "value باید یک عدد صحیح مثبت باشد."
             )
-            return
 
-        tags = list(dict.fromkeys(
-            tag.strip()
-            for tag in parsed_tags
-            if tag.strip()
-        ))
+        if (
+            isinstance(channel_id, bool)
+            or not isinstance(channel_id, int)
+            or channel_id == 0
+        ):
+            raise ValueError(
+                "id باید شناسهٔ عددی و غیرصفر کانال باشد."
+            )
+
+    except (ValueError, TypeError, KeyError) as exc:
+        await event.reply(
+            "❌ ورودی دستور دریافت معتبر نیست.\n"
+            f"جزئیات: {exc}\n\n"
+            "نمونه بدون تگ:\n"
+            '`!دریافت {"value": 100, "id": -1000025170952}`\n\n'
+            "نمونه همراه تگ:\n"
+            '`!دریافت {"value": 100, "id": -1000025170952, '
+            '"tags": ["لاو", "کیوت"]}`'
+        )
+        return
 
 
     if requested_count <= 0:
@@ -698,129 +760,73 @@ async def send_gifs(
     self: "GifGrabberPlugin",
     event: events.NewMessage.Event,
 ) -> None:
+
+
     args_text = getattr(
         event,
         "args_text",
         "",
     ).strip()
 
-    match = re.fullmatch(
-        r"\s*(\d+)\s+(-?\d+)(?:\s+(.*?))?\s*",
-        args_text,
-        re.DOTALL,
-    )
-
-    if not match:
-        await event.reply(
-            "❌ قالب دستور نامعتبر است.\n"
-            "نمونه‌ها:\n"
-            "`!ارسال 50 49245702`\n"
-            "`!ارسال 50 -100123 عاشقانه`\n"
-            '`!ارسال 50 -100123 ["عاشقانه", "کیوت"] 2 ثانیه`\n'
-            "`!ارسال 50 -100123 1 دقیقه`"
-        )
-        return
-
-    requested_count = int(match.group(1))
-    target_id = int(match.group(2))
-    tail = (match.group(3) or "").strip()
-
-    if requested_count <= 0 or target_id == 0:
-        await event.reply(
-            "❌ تعداد باید مثبت باشد و شناسهٔ مقصد نمی‌تواند صفر باشد."
-        )
-        return
-
-    # استخراج فاصلهٔ زمانی از انتهای دستور
-    interval_seconds = 0
-
-    interval_match = re.search(
-        r"(\d+)\s*(ثانیه(?:‌ها|ها| ها)?|دقیقه(?:‌ها|ها| ها)?|دیقه|ساعت|روز)\s*$",
-        tail,
-    )
-
-    if interval_match:
-        interval_value = int(
-            interval_match.group(1)
+    try:
+        data = _parse_dict_command(
+            args_text,
+            required_keys={"value", "id"},
+            allowed_keys={"value", "id", "delay", "tags"},
         )
 
-        unit = (
-            interval_match.group(2)
-            .replace("\u200c", "")
-            .replace(" ", "")
-        )
+        requested_count = data["value"]
+        target_id = data["id"]
+        delay = data.get("delay", 0)
+        tags = _parse_gif_tags(data.get("tags"))
 
-        if interval_value <= 0:
-            await event.reply(
-                "❌ فاصلهٔ زمانی باید بیشتر از صفر باشد."
+        if (
+            isinstance(requested_count, bool)
+            or not isinstance(requested_count, int)
+            or requested_count <= 0
+        ):
+            raise ValueError(
+                "value باید یک عدد صحیح مثبت باشد."
             )
-            return
 
-        if unit.startswith("ثانیه"):
-            multiplier = 1
+        if (
+            isinstance(target_id, bool)
+            or not isinstance(target_id, int)
+            or target_id == 0
+        ):
+            raise ValueError(
+                "id باید شناسهٔ عددی و غیرصفر مقصد باشد."
+            )
 
-        elif unit.startswith("دقیقه") or unit == "دیقه":
-            multiplier = 60
+        if (
+            isinstance(delay, bool)
+            or not isinstance(delay, int)
+            or delay < 0
+        ):
+            raise ValueError(
+                "delay باید عدد صحیح صفر یا بزرگ‌تر باشد."
+            )
 
-        elif unit == "ساعت":
-            multiplier = 60 * 60
+    except (ValueError, TypeError, KeyError) as exc:
+        await event.reply(
+            "❌ ورودی دستور ارسال معتبر نیست.\n"
+            f"جزئیات: {exc}\n\n"
+            "نمونه:\n"
+            '`!ارسال {"value": 25, "id": -1000025170952, '
+            '"delay": 2, "tags": ["لاو"]}`'
+        )
+        return
 
-        else:
-            multiplier = 24 * 60 * 60
-
-        interval_seconds = interval_value * multiplier
-
-        # عبارت زمانی از انتهای دستور جدا می‌شود تا باقی‌مانده
-        # برای استخراج تگ‌ها استفاده شود.
-        tail = tail[:interval_match.start()].strip()
-
-    # استخراج تگ‌ها
-    tags = None
-
-    if tail:
-        if tail.startswith("["):
-            try:
-                parsed_tags = ast.literal_eval(tail)
-
-            except (ValueError, SyntaxError):
-                await event.reply(
-                    "❌ فهرست تگ‌ها معتبر نیست.\n"
-                    'مثال: `["عاشقانه", "کیوت"]`'
-                )
-                return
-
-            if (
-                not isinstance(parsed_tags, list)
-                or any(
-                    not isinstance(tag, str)
-                    for tag in parsed_tags
-                )
-            ):
-                await event.reply(
-                    "❌ تگ‌ها باید فهرستی از متن باشند."
-                )
-                return
-
-            tags = list(dict.fromkeys(
-                tag.strip()
-                for tag in parsed_tags
-                if tag.strip()
-            ))
-
-            if not tags:
-                await event.reply(
-                    "❌ فهرست تگ‌ها خالی است."
-                )
-                return
-
-        else:
-            # یک تگ متنی؛ برای چند تگ از فهرست استفاده کن.
-            tags = [tail]
+    interval_seconds = delay
 
     target_count = min(
         requested_count,
         MAX_SEND_GIFS_PER_COMMAND,
     )
+
+
+
+    
 
     no_gifs_message = None
     gifs_payload = []

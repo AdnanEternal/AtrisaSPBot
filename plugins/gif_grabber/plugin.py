@@ -3,9 +3,11 @@ from core.base_plugin import BasePlugin
 from . import handlers, sender
 
 
+
+
 class GifGrabberPlugin(BasePlugin):
     name = "GIF Grabber"
-    version = "1.4.1"
+    version = "1.5.0"
 
     def __init__(
         self,
