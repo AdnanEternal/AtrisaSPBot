@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 import ast
 import re
 import asyncio
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from splusthon.tl.functions.messages import SendMediaRequest
 from splusthon import events
@@ -9,6 +10,8 @@ from splusthon.tl.functions.messages import SaveGifRequest,GetSavedGifsRequest
 from splusthon.tl import types
 from splusthon.errors import FloodWaitError
 
+
+from core.permissions import is_owner
 from core.decorators import command, on_event
 
 from . import memory, sender
@@ -1089,20 +1092,511 @@ async def stop_send_gifs(
         )
 
 
+_SOROUSH_LINK_PATTERN = re.compile(
+    r"""https?://[^\s<>"']+|
+        (?:splus|soroush)://[^\s<>"']+|
+        (?<![\w@])(?:www\.)?(?:splus\.ir|web\.splus\.ir|sapp\.ir|soroush-app\.ir)/[^\s<>"']+
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_SOROUSH_HOSTS = {
+    "splus.ir",
+    "www.splus.ir",
+    "web.splus.ir",
+    "sapp.ir",
+    "www.sapp.ir",
+    "soroush-app.ir",
+    "www.soroush-app.ir",
+}
+
+_ROUTE_SEGMENTS = {
+    "resolve",
+    "join",
+    "joinchat",
+    "c",
+    "p",
+    "post",
+    "message",
+    "messages",
+    "channel",
+    "channels",
+    "group",
+    "groups",
+    "chat",
+    "chats",
+    "open",
+    "view",
+}
+
+_MESSAGE_QUERY_KEYS = (
+    "message_id",
+    "messageid",
+    "msg_id",
+    "msgid",
+    "mid",
+    "post_id",
+    "postid",
+    "post",
+    "msg",
+    "message",
+)
+
+_CHAT_QUERY_KEYS = (
+    "username",
+    "domain",
+    "channel",
+    "channel_id",
+    "group",
+    "group_id",
+    "chat",
+    "chat_id",
+    "peer",
+)
+
+
+def _find_soroush_link(text: str) -> str | None:
+    """پیداکردن نخستین لینک معتبر سروش‌پلاس در متن."""
+
+    for match in _SOROUSH_LINK_PATTERN.finditer(text or ""):
+        link = match.group(0).rstrip(
+            ".,;!?)]}،؛»"
+        )
+
+        # لینک‌های بدون scheme را به URL معمولی تبدیل کن.
+        if not re.match(
+            r"^[a-z][a-z0-9+.-]*://",
+            link,
+            re.IGNORECASE,
+        ):
+            link = "https://" + link
+
+        try:
+            parsed = urlsplit(link)
+        except ValueError:
+            continue
+
+        scheme = parsed.scheme.casefold()
+
+        if scheme in {"splus", "soroush"}:
+            return link
+
+        if (
+            scheme in {"http", "https"}
+            and (parsed.hostname or "").casefold() in _SOROUSH_HOSTS
+        ):
+            return link
+
+    return None
+
+
+def _parse_soroush_message_link(
+    link: str,
+) -> tuple[str, int] | None:
+    """
+    استخراج مرجع گفتگو و شناسه پیام از لینک.
+
+    خروجی: (chat_ref, message_id)
+    """
+
+    try:
+        parsed = urlsplit(link)
+    except ValueError:
+        return None
+
+    scheme = parsed.scheme.casefold()
+
+    if scheme in {"http", "https"}:
+        if (parsed.hostname or "").casefold() not in _SOROUSH_HOSTS:
+            return None
+
+    elif scheme not in {"splus", "soroush"}:
+        return None
+
+    path_parts = [
+        unquote(part).strip()
+        for part in parsed.path.split("/")
+        if part.strip()
+    ]
+
+    query = {
+        key.casefold(): values
+        for key, values in parse_qs(parsed.query).items()
+    }
+
+    def query_value(keys):
+        for key in keys:
+            values = query.get(key)
+
+            if values and str(values[0]).strip():
+                return str(values[0]).strip()
+
+        return None
+
+    # ۱) ابتدا شناسه‌ای را که صریحاً در query به پیام مربوط است پیدا کن.
+    message_id = None
+    message_path_index = None
+
+    for key in _MESSAGE_QUERY_KEYS:
+        value = query_value((key,))
+
+        if value and value.isdigit() and int(value) > 0:
+            message_id = int(value)
+            break
+
+    # ۲) اگر شناسه در query نبود، آخرین بخش عددی مسیر را بررسی کن.
+    if message_id is None:
+        for index in range(len(path_parts) - 1, -1, -1):
+            value = path_parts[index]
+
+            if not value.isdigit() or int(value) <= 0:
+                continue
+
+            # در URL وب، یک بخش عددی تنها ممکن است شناسه گفتگو باشد.
+            # برای پیام باید پیش از آن مرجع گفتگو یا مسیر مناسب وجود داشته باشد.
+            custom_host = (
+                scheme in {"splus", "soroush"}
+                and parsed.netloc.casefold() not in _ROUTE_SEGMENTS
+            )
+
+            if (
+                index > 0
+                or custom_host
+                or query_value(_CHAT_QUERY_KEYS)
+            ):
+                message_id = int(value)
+                message_path_index = index
+                break
+
+    # ۳) پشتیبانی از پارامتر عمومی id در قالب‌هایی که از آن استفاده می‌کنند.
+    if message_id is None:
+        value = query_value(("id",))
+
+        if value and value.isdigit() and int(value) > 0:
+            message_id = int(value)
+
+    if message_id is None:
+        return None
+
+    # مرجع گفتگو ممکن است جداگانه در query مشخص شده باشد.
+    chat_ref = query_value(_CHAT_QUERY_KEYS)
+
+    # اگر شناسه پیام از مسیر آمده، قسمت‌های بعد از آن متعلق به پیام‌اند.
+    if message_path_index is not None:
+        candidate_parts = path_parts[:message_path_index]
+    else:
+        candidate_parts = path_parts
+
+    # حذف اجزای کنترلی مسیر، مانند /c/ و /message/.
+    candidate_parts = [
+        part
+        for part in candidate_parts
+        if part.casefold() not in _ROUTE_SEGMENTS
+    ]
+
+    if not chat_ref and candidate_parts:
+        chat_ref = candidate_parts[-1]
+
+    # پشتیبانی از URIهایی مانند splus://username/123
+    if not chat_ref and scheme in {"splus", "soroush"}:
+        host_ref = unquote(parsed.netloc).strip()
+
+        if host_ref.casefold() not in _ROUTE_SEGMENTS:
+            chat_ref = host_ref
+
+    if not chat_ref:
+        return None
+
+    chat_ref = chat_ref.strip().lstrip("@")
+
+    if not chat_ref:
+        return None
+
+    return chat_ref, message_id
+
+
+def _dialog_matches_chat_ref(
+    dialog,
+    chat_ref: str,
+) -> bool:
+    """بررسی تطبیق لینک با یک گروه یا کانال در دسترس."""
+
+    if not (
+        getattr(dialog, "is_group", False)
+        or getattr(dialog, "is_channel", False)
+    ):
+        return False
+
+    entity = getattr(dialog, "entity", None)
+
+    if entity is None:
+        return False
+
+    entity_type = type(entity).__name__.casefold()
+
+    # گفتگوهای ممنوع‌شده یا ترک‌شده را عضوِ قابل‌دسترسی حساب نکن.
+    if (
+        "forbidden" in entity_type
+        or getattr(entity, "left", False)
+        or getattr(entity, "kicked", False)
+    ):
+        return False
+
+    wanted = str(chat_ref).strip().lstrip("@").casefold()
+
+    username = getattr(entity, "username", None)
+
+    if username and str(username).strip().lstrip("@").casefold() == wanted:
+        return True
+
+    # بعضی لینک‌ها به جای username از شناسه عددی استفاده می‌کنند.
+    try:
+        wanted_id = int(wanted)
+    except (TypeError, ValueError):
+        return False
+
+    candidates = set()
+
+    for value in (
+        getattr(dialog, "id", None),
+        getattr(entity, "id", None),
+    ):
+        if value is None:
+            continue
+
+        value = int(value)
+        candidates.update({
+            value,
+            abs(value),
+            -abs(value),
+        })
+
+    entity_id = getattr(entity, "id", None)
+
+    if entity_id is not None:
+        entity_id = abs(int(entity_id))
+
+        # قالب رایج شناسه کانال
+        candidates.add(-int(f"100{entity_id}"))
+
+        # قالب شناسه‌ای که در کد فعلی پروژه هم استفاده شده
+        candidates.add(-(1_000_000_000_000 + entity_id))
+
+    return wanted_id in candidates
+
+
+async def _reply_gif_ids_from_link(
+    self: "GifGrabberPlugin",
+    event: events.NewMessage.Event,
+    chat_ref: str,
+    message_id: int,
+) -> None:
+    """پیداکردن پیام لینک‌شده و پاسخ‌دادن با مشخصات گیف."""
+
+    try:
+        dialogs = await self.client.get_dialogs()
+    except Exception as exc:
+        print(
+            "❌ GIF Grabber - دریافت گفتگوها برای بررسی لینک "
+            f"ناموفق بود: {exc}"
+        )
+        await event.reply(
+            "❌ نتونستم فهرست گفتگوهای اتریسا رو دریافت کنم."
+        )
+        return
+
+    source_dialog = next(
+        (
+            dialog
+            for dialog in dialogs
+            if _dialog_matches_chat_ref(dialog, chat_ref)
+        ),
+        None,
+    )
+
+    if source_dialog is None:
+        await event.reply(
+            "❌ گفتگوی این لینک در گفتگوهای در دسترس اتریسا پیدا نشد.\n"
+            "ممکنه اتریسا عضو اون گروه یا کانال نباشه، "
+            "یا مرجع گفتگو در لینک قابل تشخیص نباشه."
+        )
+        return
+
+    try:
+        message = await self.client.get_messages(
+            source_dialog.entity,
+            ids=message_id,
+        )
+    except Exception as exc:
+        print(
+            "❌ GIF Grabber - دریافت پیام لینک‌شده ناموفق بود: "
+            f"{exc}"
+        )
+        await event.reply(
+            "❌ دریافت پیام لینک‌شده ناموفق بود.\n"
+            f"خطا: `{type(exc).__name__}`"
+        )
+        return
+
+    # بعضی شکل‌های خروجی ممکن است فهرستی باشند.
+    if isinstance(message, (list, tuple)):
+        message = next(
+            (item for item in message if item is not None),
+            None,
+        )
+
+    if message is None or not getattr(message, "id", None):
+        await event.reply(
+            "❌ این پیام پیدا نشد یا اتریسا اجازهٔ دسترسی به اون رو نداره."
+        )
+        return
+
+    # در SPlusthon، gif فقط برای سندهایی برمی‌گردد که ویژگی گیف متحرک دارند.
+    try:
+        gif = getattr(message, "gif", None)
+    except Exception as exc:
+        print(
+            "❌ GIF Grabber - بررسی نوع رسانه پیام ناموفق بود: "
+            f"{exc}"
+        )
+        gif = None
+
+    if gif is None:
+        await event.reply(
+            "ℹ️ پیام پیدا شد، اما به‌عنوان گیف شناسایی نشد."
+        )
+        return
+
+    document_id = getattr(gif, "id", None)
+    access_hash = getattr(gif, "access_hash", None)
+
+    if document_id is None or access_hash is None:
+        await event.reply(
+            "❌ اطلاعات لازم برای ارسال گیف موجود نیست."
+        )
+        return
+
+    document_id = int(document_id)
+    access_hash = int(access_hash)
+
+    # تلاش اول: استفاده از file_reference خود پیام مبدأ
+    file_reference = (
+        getattr(gif, "file_reference", None) or b""
+    )
+
+    attempts = [
+        ("مرجع اصلی پیام", file_reference),
+        ("مرجع خالی", b""),
+    ]
+
+    errors = []
+
+    for attempt_number, (attempt_name, reference) in enumerate(
+        attempts,
+        start=1,
+    ):
+        try:
+            input_document = types.InputDocument(
+                id=document_id,
+                access_hash=access_hash,
+                file_reference=reference,
+            )
+
+            await self.client(
+                SendMediaRequest(
+                    peer=event.chat_id,
+                    media=types.InputMediaDocument(
+                        id=input_document,
+                    ),
+                    message="",
+                    reply_to=types.InputReplyToMessage(
+                        event.id
+                    ),
+                )
+            )
+
+            print(
+                "✅ GIF Grabber - ارسال گیف پیام لینک‌شده موفق بود؛ "
+                f"شناسهٔ سند: {document_id}، "
+                f"تلاش: {attempt_number}، "
+                f"روش: {attempt_name}"
+            )
+            return
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            error_text = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            errors.append(
+                f"تلاش {attempt_number} ({attempt_name}): "
+                f"{error_text}"
+            )
+
+            print(
+                "⚠️ GIF Grabber - ارسال گیف ناموفق بود؛ "
+                f"شناسهٔ سند: {document_id}، "
+                f"تلاش: {attempt_number}، "
+                f"روش: {attempt_name}، "
+                f"خطا: {error_text}"
+            )
+
+    # هر دو روش شکست خوردند.
+    await event.reply(
+        "❌ ارسال گیف ناموفق بود؛ هر دو تلاش شکست خوردند.\n\n"
+        + "\n".join(errors)
+    )
+
 @on_event(events.NewMessage(incoming=True))
 async def on_message(
     self: "GifGrabberPlugin",
     event: events.NewMessage.Event,
 ) -> None:
+    raw_text = (event.raw_text or "").strip()
+
+    # استخراج اطلاعات پیام لینک‌شده فقط برای مالک ربات
+    if is_owner(getattr(event, "sender_id", None)):
+        link = _find_soroush_link(raw_text)
+
+        if link is not None:
+            parsed_link = _parse_soroush_message_link(link)
+
+            if parsed_link is None:
+                await event.reply(
+                    "❌ لینک سروش‌پلاس شناسایی شد، "
+                    "اما شناسهٔ پیام یا گفتگو از قالب آن استخراج نشد.\n"
+                    "لینک مستقیم خود پیام را بفرست، نه لینک صفحهٔ گفتگو."
+                )
+                return
+
+            chat_ref, message_id = parsed_link
+
+            await _reply_gif_ids_from_link(
+                self,
+                event,
+                chat_ref,
+                message_id,
+            )
+            return
+
+    # منطق قبلی پلاگین از اینجا ادامه پیدا می‌کند.
     if event.document:
-        print(event.document.id,"___access hash___",event.document.access_hash)
-    
+        print(
+            event.document.id,
+            "___access hash___",
+            event.document.access_hash,
+        )
+
     if (
         event.is_group is not True
         and event.is_channel is not True
     ):
         return
-    print('event recived')
+
+    print("event recived")
+
     raw_text = (event.raw_text or "").strip()
 
     # --------------------------------------------------
