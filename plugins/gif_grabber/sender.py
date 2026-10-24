@@ -402,6 +402,34 @@ async def _run_send_job(
                 except Exception as exc:
                     failed_count += 1
 
+                    error_text = str(exc)
+                    is_file_not_found = (
+                        "FILE_NOT_FOUND" in error_text.upper()
+                    )
+
+                    if is_file_not_found:
+                        try:
+                            await memory.mark_broken_gif(
+                                self.db,
+                                document_id,
+                                access_hash,
+                                error=error_text,
+                            )
+
+                            print(
+                                "🗑️ GIF Grabber - گیف "
+                                f"{document_id} به دلیل "
+                                "FILE_NOT_FOUND به بانک "
+                                "گیف‌های خراب منتقل شد."
+                            )
+
+                        except Exception as db_exc:
+                            print(
+                                "❌ GIF Grabber - انتقال گیف "
+                                f"{document_id} به بانک خرابی "
+                                f"ناموفق بود: {db_exc}"
+                            )
+
                     print(
                         "❌ GIF Grabber - ارسال گیف "
                         f"{document_id} به مقصد {target_id} "

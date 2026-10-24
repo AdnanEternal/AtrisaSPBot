@@ -7,7 +7,7 @@ from . import handlers, sender
 
 class GifGrabberPlugin(BasePlugin):
     name = "GIF Grabber"
-    version = "1.6.0"
+    version = "1.6.1"
 
     def __init__(
         self,

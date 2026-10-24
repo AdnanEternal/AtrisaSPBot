@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from .plugin import GifGrabberPlugin
 
 
-MAX_GIFS_PER_COMMAND = 2000000
-MAX_SEND_GIFS_PER_COMMAND = 5000
+MAX_GIFS_PER_COMMAND = 9999999
+MAX_SEND_GIFS_PER_COMMAND = 9999999
 # حداکثر تعداد درخواست‌های حذف هم‌زمان
 GIF_DELETE_CONCURRENCY = 5
 

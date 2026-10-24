@@ -6,7 +6,7 @@ TAGS_TABLE_NAME = "gif_tags"
 
 GIF_CHAT_SETTINGS_TABLE_NAME = "gif_chat_settings"
 GIF_SENT_HISTORY_TABLE_NAME = "gif_sent_history"
-
+BROKEN_GIFS_TABLE_NAME = "broken_saved_gifs"
 
 async def initialize(db) -> None:
     """ساخت جدول‌های بانک گیف و تنظیمات و سابقهٔ ارسال."""
@@ -31,6 +31,20 @@ async def initialize(db) -> None:
         indexes=["tag"],
     )
 
+   # بانک دائمی گیف‌هایی که دیگر قابل ارسال نیستند.
+    # وجود رکورد در این جدول مانع ورود دوبارهٔ گیف به بانک اصلی می‌شود.
+    await db.create_table(
+        BROKEN_GIFS_TABLE_NAME,
+        columns={
+            "doc_id": "INTEGER NOT NULL",
+            "access_hash": "INTEGER NOT NULL",
+            "error": "TEXT NOT NULL DEFAULT ''",
+            "failed_at": "REAL NOT NULL",
+        },
+        unique=[["doc_id", "access_hash"]],
+        indexes=["doc_id"],
+    )
+
     await db.create_table(
         GIF_CHAT_SETTINGS_TABLE_NAME,
         columns={
@@ -51,6 +65,102 @@ async def initialize(db) -> None:
         unique=[["chat_id", "doc_id", "access_hash"]],
         indexes=["chat_id"],
     )
+
+async def is_broken_gif(
+    db,
+    doc_id: int,
+    access_hash: int,
+) -> bool:
+    """بررسی اینکه گیف قبلاً خراب و غیرقابل استفاده ثبت شده است."""
+
+    await initialize(db)
+
+    row = await db.fetchone(
+        f"""
+        SELECT 1
+        FROM {BROKEN_GIFS_TABLE_NAME}
+        WHERE doc_id = ?
+          AND access_hash = ?
+        LIMIT 1
+        """,
+        (
+            int(doc_id),
+            int(access_hash),
+        ),
+    )
+
+    return row is not None
+
+
+async def mark_broken_gif(
+    db,
+    doc_id: int,
+    access_hash: int,
+    error: str = "",
+) -> None:
+    """
+    ثبت دائمی گیف خراب و حذف آن از بانک اصلی و تمام تگ‌هایش.
+
+    ثبت خرابی حتی در صورت اجرای مجدد تابع حفظ می‌شود.
+    """
+
+    await initialize(db)
+
+    doc_id = int(doc_id)
+    access_hash = int(access_hash)
+
+    await db.insert(
+        BROKEN_GIFS_TABLE_NAME,
+        {
+            "doc_id": doc_id,
+            "access_hash": access_hash,
+            "error": str(error),
+            "failed_at": time.time(),
+        },
+        or_ignore=True,
+    )
+
+    # اگر رکورد قبلاً ثبت شده باشد، خطای جدید هم ذخیره شود.
+    await db.execute(
+        f"""
+        UPDATE {BROKEN_GIFS_TABLE_NAME}
+        SET error = ?
+        WHERE doc_id = ?
+          AND access_hash = ?
+        """,
+        (
+            str(error),
+            doc_id,
+            access_hash,
+        ),
+    )
+
+    # حذف از بانک اصلی
+    await db.execute(
+        f"""
+        DELETE FROM {TABLE_NAME}
+        WHERE doc_id = ?
+          AND access_hash = ?
+        """,
+        (
+            doc_id,
+            access_hash,
+        ),
+    )
+
+    # حذف تمام تگ‌های قبلی
+    await db.execute(
+        f"""
+        DELETE FROM {TAGS_TABLE_NAME}
+        WHERE doc_id = ?
+          AND access_hash = ?
+        """,
+        (
+            doc_id,
+            access_hash,
+        ),
+    )
+
 
 
 def _normalize_tags(tags) -> list[str]:
@@ -84,6 +194,13 @@ async def remember_gif(
 
     doc_id = int(doc_id)
     access_hash = int(access_hash)
+
+    if await is_broken_gif(
+        db,
+        doc_id,
+        access_hash,
+    ):
+        return False
 
     result = await db.insert(
         TABLE_NAME,
