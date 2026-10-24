@@ -92,6 +92,35 @@ def _parse_gif_tags(value) -> list[str] | None:
     return tags
 
 
+def _parse_gif_filter(value) -> list[str] | None:
+    """اعتبارسنجی فهرست کلمات کلیدی فیلتر متن پیام‌ها."""
+
+    if value is None:
+        return None
+
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(keyword, str) for keyword in value)
+    ):
+        raise ValueError(
+            'کلید filter باید فهرستی از متن باشد؛ '
+            'مثال: ["#Baby", "#Cute"]'
+        )
+
+    keywords = list(dict.fromkeys(
+        keyword.strip()
+        for keyword in value
+        if keyword.strip()
+    ))
+
+    if not keywords:
+        raise ValueError(
+            "فهرست filter نمی‌تواند خالی باشد؛ "
+            "برای دریافت بدون فیلتر متن، کلید filter را حذف کن."
+        )
+
+    return keywords
+
 
 
 @command(
@@ -334,12 +363,13 @@ async def fetch_gifs(
         data = _parse_dict_command(
             args_text,
             required_keys={"value", "id"},
-            allowed_keys={"value", "id", "tags"},
+            allowed_keys={"value", "id", "tags", "filter"},
         )
 
         requested_count = data["value"]
         channel_id = data["id"]
         tags = _parse_gif_tags(data.get("tags"))
+        filter_keywords = _parse_gif_filter(data.get("filter"))
 
         if (
             isinstance(requested_count, bool)
@@ -537,7 +567,25 @@ async def fetch_gifs(
 
         for message in page:
             scanned_count += 1
-            
+
+            # بررسی کلمات کلیدی در متن یا کپشن پیام
+            if filter_keywords:
+                message_text = (
+                    getattr(message, "message", None)
+                    or getattr(message, "text", None)
+                    or getattr(message, "raw_text", None)
+                    or ""
+                )
+
+                message_text = str(message_text).casefold()
+
+                # وجود حداقل یکی از کلمات برای پذیرش پیام کافی است.
+                if not any(
+                    keyword.casefold() in message_text
+                    for keyword in filter_keywords
+                ):
+                    continue
+
             gif = message.gif
 
             if gif is None:
