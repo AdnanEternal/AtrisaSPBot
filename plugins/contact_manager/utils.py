@@ -1,4 +1,6 @@
 from splusthon import functions, types
+from splusthon.tl.functions.channels import GetParticipantsRequest, GetFullChannelRequest
+from splusthon.tl.types import ChannelParticipantsRecent
 
 
 async def get_contacts(client):
@@ -77,14 +79,40 @@ async def get_official_member_count(client, entity):
 
     return int(count)
 
+async def count_retrievable_members(client, entity):
+    """شمارش کاربرانی که API واقعاً برمی‌گرداند."""
+
+    offset=0
+    limit=5000
+
+
+    
+    result = await client(GetParticipantsRequest(
+        channel=entity,
+        filter=ChannelParticipantsRecent(),
+        offset=offset,
+        limit=limit,
+        hash=0
+    ))
+
+    return len(result.users)
+
 
 async def get_chat_member_stats(client, chat_ref):
-    """جمع‌آوری آمار رسمی گروه یا کانال."""
+    """جمع‌آوری آمار رسمی و اعضای قابل دریافت."""
 
     entity = await resolve_chat_entity(client, chat_ref)
-    total = await get_official_member_count(client, entity)
+
+    total_members = await get_official_member_count(
+        client, entity
+    )
+
+    retrievable_members = await count_retrievable_members(
+        client, entity
+    )
 
     return {
         "title": getattr(entity, "title", None),
-        "total_members": total,
+        "total_members": total_members,
+        "retrievable_members": retrievable_members,
     }

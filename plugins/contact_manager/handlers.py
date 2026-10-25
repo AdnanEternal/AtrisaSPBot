@@ -206,12 +206,12 @@ async def extract_users(
 
         title = stats["title"] or "گروه/کانال"
         total = stats["total_members"]
+        retrievable = stats["retrievable_members"]
 
         await event.reply(
             f"📊 **آمار {title}**\n\n"
-            f"👥 تعداد رسمی اعضا طبق API: **{total}**\n\n"
-            "ℹ️ تعداد اعضایی که اطلاعاتشان قابل دریافت است، "
-            "هنوز محاسبه نشده است."
+            f"👥 تعداد کل اعضا: **{total}**\n"
+            f"✅ تعداد اعضای قابل استخراج: **{retrievable}**"
         )
 
     except Exception as exc:
