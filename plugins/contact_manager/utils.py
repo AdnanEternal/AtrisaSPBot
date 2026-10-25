@@ -19,24 +19,22 @@ async def get_contact_count(client):
 
 
 
-async def resolve_group_entity(client, group_ref):
-    """پیدا کردن Entity گروه با شناسه یا نام کاربری."""
+async def resolve_group_entity(client, chat_ref):
+    """Resolve a group or channel by ID, username, or supported link."""
 
-    raw = str(group_ref).strip()
+    raw = str(chat_ref).strip()
 
     if not raw:
-        raise ValueError("شناسه یا آدرس گروه خالی است.")
+        raise ValueError("شناسه یا آدرس گروه/کانال خالی است.")
 
-    # شناسه عددی: ابتدا گروه را در گفتگوهای حساب پیدا کن.
+    # شناسه عددی: از گفتگوهای شناخته‌شده حساب پیدا کن.
     if raw.lstrip("-").isdigit():
         wanted_id = int(raw)
 
         async for dialog in client.iter_dialogs():
-            if not getattr(dialog, "is_group", False):
-                continue
-
             entity = getattr(dialog, "entity", None)
-            if entity is None:
+
+            if not isinstance(entity, (types.Chat, types.Channel)):
                 continue
 
             entity_id = getattr(entity, "id", None)
@@ -46,35 +44,28 @@ async def resolve_group_entity(client, group_ref):
                 return entity
 
         raise ValueError(
-            "این شناسه در گفتگوهای حساب پیدا نشد. "
-            "عضویت یا دسترسی حساب به گروه و شناسه را بررسی کن؛ "
-            "برای گروه عمومی می‌توانی نام کاربری یا لینک معتبرش را بدهی."
+            "گروه یا کانال با این شناسه در گفتگوهای حساب پیدا نشد. "
+            "عضویت حساب و شناسه را بررسی کن."
         )
 
-    # نام کاربری یا لینک گروه
+    # نام کاربری یا لینک قابل شناسایی توسط SPlusthon
     entity = await client.get_entity(raw)
 
-    if isinstance(entity, types.Chat):
+    if isinstance(entity, (types.Chat, types.Channel)):
         return entity
 
-    if (
-        isinstance(entity, types.Channel)
-        and getattr(entity, "megagroup", False)
-    ):
-        return entity
-
-    raise ValueError("موجودیت پیدا شده یک گروه قابل پشتیبانی نیست.")
+    raise ValueError("این شناسه به گروه یا کانال اشاره نمی‌کند.")
 
 
-async def get_group_member_stats(client, group_ref):
-    """دریافت آمار کل اعضا بدون خروجی گرفتن از فهرست هویتی."""
+async def get_group_member_stats(client, chat_ref):
+    """دریافت آمار کل اعضا بدون ذخیره فهرست کاربران."""
 
-    entity = await resolve_group_entity(client, group_ref)
+    entity = await resolve_group_entity(client, chat_ref)
 
     total = None
 
     if isinstance(entity, types.Channel):
-        # برای گروه‌های مبتنی بر Channel، تعداد را از اطلاعات کامل گروه بگیر.
+        # شامل کانال عادی و سوپرگروه مبتنی بر Channel
         result = await client(
             functions.channels.GetFullChannelRequest(entity)
         )
@@ -83,26 +74,12 @@ async def get_group_member_stats(client, group_ref):
         total = getattr(full_chat, "participants_count", None)
 
     elif isinstance(entity, types.Chat):
-        # ابتدا از شمارنده موجود در Entity استفاده کن.
+        # برای گروه معمولی از شمارنده موجود در Entity استفاده کن.
         total = getattr(entity, "participants_count", None)
-
-        # در گروه‌های قدیمی‌تر، اگر شمارنده موجود نبود، از پاسخ
-        # GetFullChat فقط تعداد رکوردهای اعضا را محاسبه کن.
-        if total is None:
-            result = await client(
-                functions.messages.GetFullChatRequest(entity.id)
-            )
-
-            full_chat = getattr(result, "full_chat", None)
-            participants = getattr(full_chat, "participants", None)
-            rows = getattr(participants, "participants", None)
-
-            if rows is not None:
-                total = len(rows)
 
     if total is None:
         raise ValueError(
-            "API تعداد اعضای این گروه را برنگرداند."
+            "API تعداد کل اعضای این گروه/کانال را ارائه نکرد."
         )
 
     return {

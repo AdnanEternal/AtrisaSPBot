@@ -169,12 +169,11 @@ async def delete_contacts(
             "❌ هنگام حذف مخاطبین خطایی رخ داد.\n"
             f"نوع خطا: `{type(exc).__name__}`"
         )
-
 @command(
     name="استخراج کاربران",
     permission="owner",
     chat_type="all",
-    description="نمایش آمار اعضا و اعضای قابل استخراج یک گروه",
+    description="نمایش آمار اعضای گروه یا کانال",
     native_name="extract_users",
 )
 async def extract_users(
@@ -187,21 +186,14 @@ async def extract_users(
     if not is_owner(event.sender_id):
         return
 
-    args = getattr(event, "args_text", "").strip()
+    chat_ref = getattr(event, "args_text", "").strip()
 
-    if not args:
+    if not chat_ref:
         await event.reply(
-            "⚠️ شناسه گروه را وارد کن.\n\n"
+            "⚠️ شناسه، نام کاربری یا لینک گروه/کانال را وارد کن.\n\n"
             "مثال:\n"
-            "`!استخراج کاربران 123456789`"
-        )
-        return
-
-    try:
-        group_id = int(args)
-    except ValueError:
-        await event.reply(
-            "❌ شناسه گروه باید عددی باشد."
+            "`!استخراج کاربران 123456789`\n"
+            "`!استخراج کاربران channel_username`"
         )
         return
 
@@ -210,18 +202,17 @@ async def extract_users(
 
         stats = await get_group_member_stats(
             self.client,
-            args,
+            chat_ref,
         )
 
-        title = stats.get("title") or "گروه"
+        title = stats.get("title") or "گروه/کانال"
         total = stats["total"]
 
         await event.reply(
             f"📊 **آمار {title}**\n\n"
             f"👥 تعداد کل اعضا طبق API: **{total}**\n\n"
-            "ℹ️ این گزارش تعداد کل را نشان می‌دهد؛ "
-            "تعداد اعضای قابل دریافت به‌صورت جداگانه "
-            "از شمارندهٔ سرور قابل محاسبه نیست."
+            "ℹ️ تعداد اعضایی که اطلاعاتشان جداگانه "
+            "قابل دریافت است، در این نسخه اندازه‌گیری نمی‌شود."
         )
 
     except Exception as exc:
@@ -234,7 +225,7 @@ async def extract_users(
         )
 
         await event.reply(
-            "❌ دریافت آمار گروه ناموفق بود.\n"
-            f"نوع خطا: `{type(exc).__name__}`\n\n"
-            "شناسه، دسترسی حساب به گروه و لاگ کامل خطا را بررسی کن."
+            "❌ دریافت آمار گروه/کانال ناموفق بود.\n"
+            f"نوع خطا: `{type(exc).__name__}`\n"
+            f"جزئیات: `{str(exc)[:250]}`"
         )
