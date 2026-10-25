@@ -1,20 +1,22 @@
-
 import re
 
 
-# لینک دعوت خصوصی
+# لینک دعوت خصوصی گروه یا کانال
 _INVITE_LINK_RE = re.compile(
     r"(?:https?://)?(?:www\.)?"
     r"splus\.ir/joingroup/([A-Za-z0-9_-]+)",
     re.IGNORECASE,
 )
 
+
 # لینک عمومی گروه یا کانال
+# فقط لینک خود مقصد پذیرفته می‌شود، نه لینک یک پیام داخل آن.
 _PUBLIC_LINK_RE = re.compile(
     r"(?:https?://)?(?:www\.)?"
     r"splus\.ir/"
     r"(?!joingroup(?:/|[?#\s]|$))"
-    r"([A-Za-z0-9_-]+)",
+    r"([A-Za-z0-9_-]+)"
+    r"/?(?=$|[?#\s)\]\.,;!؟،؛>])",
     re.IGNORECASE,
 )
 
@@ -22,7 +24,7 @@ _PUBLIC_LINK_RE = re.compile(
 def extract_join_target(
     text: str,
 ) -> tuple[str, str] | None:
-    """استخراج لینک دعوت خصوصی یا لینک عمومی."""
+    """استخراج لینک دعوت یا لینک مستقیم گروه و کانال."""
 
     text = (text or "").strip()
 
