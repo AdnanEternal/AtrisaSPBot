@@ -1,6 +1,6 @@
 import asyncio
 
-
+from . import memory
 from typing import TYPE_CHECKING
 
 from splusthon import events,functions
@@ -214,6 +214,36 @@ async def send_message_to_contacts(
             "ℹ️ هیچ مخاطبی برای ارسال پیام پیدا نشد."
         )
         return
+    
+    try:
+        sent_contact_ids = await memory.get_sent_contact_ids(
+            self.db
+        )
+    except Exception as exc:
+        print(
+            "Message Manager - Read memory error: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        await event.reply(
+            "❌ خواندن حافظهٔ مخاطبین از دیتابیس ناموفق بود؛ "
+            "برای جلوگیری از ارسال تکراری، عملیات لغو شد."
+        )
+        return
+
+    # فقط مخاطب‌هایی که قبلاً پیام نگرفته‌اند باقی می‌مانند.
+    contacts = [
+        contact
+        for contact in contacts
+        if getattr(contact, "id", None) is not None
+        and int(contact.id) not in sent_contact_ids
+    ]
+
+    if not contacts:
+        await event.reply(
+            "ℹ️ تمام مخاطبین فعلی قبلاً پیام گرفته‌اند؛ "
+            "مخاطب جدیدی برای ارسال وجود ندارد."
+        )
+        return
 
     # جلوگیری از ارسال تکراری به شناسه‌های یکسان.
     unique_contacts = []
@@ -248,13 +278,41 @@ async def send_message_to_contacts(
         user_id = getattr(contact, "id", None)
 
         try:
+
             await self.client.send_message(
                 contact,
                 message_text,
             )
 
+            # فقط ارسال موفق در حافظه ثبت می‌شود.
+            try:
+                await memory.mark_contact_sent(
+                    self.db,
+                    user_id,
+                )
+            except Exception as exc:
+                print(
+                    "Message Manager - Save memory error: "
+                    f"user_id={user_id}, "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                # برای جلوگیری از ارسال تکراری در همین اجرا،
+                # ادامهٔ ارسال را متوقف می‌کنیم.
+                sent += 1
+                processed += 1
+
+                await event.reply(
+                    "⚠️ پیام ارسال شد، اما ذخیرهٔ شناسهٔ مخاطب "
+                    "در دیتابیس ناموفق بود. ارسال متوقف شد؛ "
+                    "ممکن است این مخاطب در اجرای بعدی دوباره "
+                    "انتخاب شود."
+                )
+                return
+
             sent += 1
             processed += 1
+
 
         except Exception as exc:
             failed += 1

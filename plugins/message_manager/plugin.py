@@ -2,6 +2,7 @@
 from core.base_plugin import BasePlugin
 
 from . import handlers
+from . import memory
 
 
 class MessageManagerPlugin(BasePlugin):
@@ -11,3 +12,5 @@ class MessageManagerPlugin(BasePlugin):
     send_text_messages = handlers.send_text_messages
     send_message_to_contacts = handlers.send_message_to_contacts
 
+    async def on_load(self) -> None:
+        await memory.initialize(self.db)
