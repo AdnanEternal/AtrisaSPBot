@@ -20,23 +20,21 @@ async def get_contact_count(client):
     return len(contacts)
 
 
-async def get_group_members(client, group_id, limit=2):
-    """دریافت حداکثر تعداد مشخصی از اعضای گروه یا کانال."""
-    if not 1 <= limit <= 2:
-        raise ValueError("limit must be between 1 and 2")
+async def get_group_members(client, group_id, limit=25):
+    """دریافت تعداد مشخصی از کاربران قابل‌مشاهدهٔ گروه."""
 
-    group = await client.get_entity(int(group_id))
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise ValueError("limit must be an integer")
 
-    result = await client(
-        GetParticipantsRequest(
-            channel=group,
-            filter=ChannelParticipantsSearch(""),
-            limit=limit,
-            offset=0,
-        )
+    if not 1 <= limit <= 25:
+        raise ValueError("limit must be between 1 and 25")
+
+    members = await client.get_participants(
+        int(group_id),
+        limit=limit,
     )
 
-    return list(getattr(result, "users", None) or [])[:limit]
+    return list(members or [])[:limit]
 
 
 async def add_user_to_contacts(client, user):
