@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 
-CONTACTS_LIMIT=200000
+CONTACTS_LIMIT=25
 
 
 
@@ -186,7 +186,7 @@ async def delete_contacts(
     name="افزودن مخاطبین گروه",
     permission="owner",
     chat_type="all",
-    description="افزودن حداکثر دو عضو گروه به مخاطبین با تأیید",
+    description="بررسی و افزودن مدیران قابل‌مشاهدهٔ گروه به مخاطبین",
     native_name="add_group_contacts",
 )
 async def add_group_contacts(
@@ -199,15 +199,14 @@ async def add_group_contacts(
     args = getattr(event, "args_text", "").strip()
     pending = getattr(self, "_pending_group_contacts", {})
 
-    # مرحله دوم: تأیید افزودن مخاطبین
+    # مرحلهٔ دوم: تأیید افزودن
     if args == "تأیید":
         request = pending.pop(event.sender_id, None)
         self._pending_group_contacts = pending
 
         if not request:
             await event.reply(
-                "ℹ️ درخواست تأییدشده‌ای پیدا نشد. "
-                "ابتدا شناسه گروه را ارسال کن."
+                "ℹ️ درخواست معتبری برای تأیید پیدا نشد."
             )
             return
 
@@ -226,20 +225,35 @@ async def add_group_contacts(
                 )
 
         await event.reply(
-            "📇 **نتیجه افزودن مخاطبین**\n\n"
+            "📇 **نتیجهٔ افزودن مخاطبین**\n\n"
             f"✅ موفق: {added}\n"
             f"❌ ناموفق: {failed}"
         )
         return
 
-    # مرحله اول: دریافت شناسه گروه و نمایش اعضا
-    try:
-        group_id = int(args)
-    except (TypeError, ValueError):
+    # مرحلهٔ اول: دریافت شناسه و تعداد
+    parts = args.split()
+
+    if len(parts) != 2:
         await event.reply(
-            "❌ شناسه گروه معتبر نیست.\n\n"
-            "استفاده:\n"
-            "`!افزودن مخاطبین گروه شناسه_گروه`"
+            "❌ آرگومان‌ها نامعتبرند.\n\n"
+            "روش استفاده:\n"
+            "`!افزودن مخاطبین گروه شناسه_گروه تعداد`\n\n"
+            "مثال:\n"
+            "`!افزودن مخاطبین گروه -100 25`"
+        )
+        return
+
+    try:
+        group_id = int(parts[0])
+        requested_count = int(parts[1])
+    except ValueError:
+        await event.reply("❌ شناسهٔ گروه و تعداد باید عدد باشند.")
+        return
+
+    if not 1 <= requested_count <= CONTACTS_LIMIT:
+        await event.reply(
+            f"❌ تعداد باید بین ۱ تا {CONTACTS_LIMIT} باشد."
         )
         return
 
@@ -247,7 +261,7 @@ async def add_group_contacts(
         members = await get_group_members(
             self.client,
             group_id,
-            limit=CONTACTS_LIMIT,
+            limit=requested_count,
         )
 
         contacts = await get_contacts(self.client)
@@ -257,12 +271,12 @@ async def add_group_contacts(
             user for user in members
             if user.id not in contact_ids
             and getattr(user, "access_hash", None) is not None
-        ][:CONTACTS_LIMIT]
+        ]
 
         if not candidates:
             await event.reply(
-                "ℹ️ عضو جدید و قابل‌افزودنی پیدا نشد؛ "
-                "ممکن است اعضای قابل‌مشاهده از قبل مخاطب باشند."
+                "ℹ️ مدیر قابل‌افزودن جدیدی پیدا نشد؛ "
+                "ممکن است مدیران قابل‌مشاهده از قبل مخاطب باشند."
             )
             return
 
@@ -270,32 +284,32 @@ async def add_group_contacts(
         pending[event.sender_id] = candidates
 
         lines = []
+
         for index, user in enumerate(candidates, start=1):
             first = getattr(user, "first_name", "") or ""
             last = getattr(user, "last_name", "") or ""
             name = f"{first} {last}".strip() or "بدون نام"
-
             lines.append(f"{index}. {name} — شناسه `{user.id}`")
 
         await event.reply(
-            "⚠️ **بررسی مخاطبین انتخاب‌شده**\n\n"
+            "⚠️ **بررسی مدیران انتخاب‌شده**\n\n"
             + "\n".join(lines)
-            + "\n\nحداکثر دو نفر انتخاب شده‌اند. "
-            "فقط در صورت داشتن اجازه از این افراد، "
-            "برای ادامه دستور زیر را بفرست:\n"
+            + "\n\n"
+            "این فهرست فقط شامل مدیرانی است که API برگردانده "
+            "و هنوز در مخاطبین نیستند.\n"
+            "اگر اجازهٔ افزودن این افراد را داری، تأیید کن:\n"
             "`!افزودن مخاطبین گروه تأیید`\n\n"
-            "برای لغو، کافی است تأیید نکنی."
+            "برای لغو، دستور تأیید را ارسال نکن."
         )
 
     except Exception as exc:
         print(
-            "Contact Manager - Get group members error: "
+            "Contact Manager - Get group admins error: "
             f"{type(exc).__name__}: {exc}"
         )
 
         await event.reply(
-            "❌ دریافت اعضای گروه ناموفق بود.\n"
-            "بررسی کن شناسه صحیح باشد و اتریسا به فهرست "
-            "اعضای آن دسترسی داشته باشد.\n"
+            "❌ دریافت مدیران گروه ناموفق بود.\n"
+            "شناسه و دسترسی اتریسا به گروه را بررسی کن.\n"
             f"خطا: `{type(exc).__name__}`"
         )
