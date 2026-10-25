@@ -4,8 +4,11 @@ from splusthon import events, types
 from core.decorators import command
 from core.permissions import is_owner
 
-from .utils import get_contacts, get_contact_count
-
+from .utils import (
+    get_contacts,
+    get_contact_count,
+    get_chat_member_stats,
+)
 
 if TYPE_CHECKING:
     from .plugin import ContactManagerPlugin
@@ -169,6 +172,7 @@ async def delete_contacts(
             "❌ هنگام حذف مخاطبین خطایی رخ داد.\n"
             f"نوع خطا: `{type(exc).__name__}`"
         )
+
 @command(
     name="استخراج کاربران",
     permission="owner",
@@ -180,10 +184,7 @@ async def extract_users(
     self: "ContactManagerPlugin",
     event: events.NewMessage.Event,
 ) -> None:
-    if not event.is_private:
-        return
-
-    if not is_owner(event.sender_id):
+    if not event.is_private or not is_owner(event.sender_id):
         return
 
     chat_ref = getattr(event, "args_text", "").strip()
@@ -198,34 +199,29 @@ async def extract_users(
         return
 
     try:
-        from .utils import get_group_member_stats
-
-        stats = await get_group_member_stats(
+        stats = await get_chat_member_stats(
             self.client,
             chat_ref,
         )
 
-        title = stats.get("title") or "گروه/کانال"
-        total = stats["total"]
+        title = stats["title"] or "گروه/کانال"
+        total = stats["total_members"]
 
         await event.reply(
             f"📊 **آمار {title}**\n\n"
-            f"👥 تعداد کل اعضا طبق API: **{total}**\n\n"
-            "ℹ️ تعداد اعضایی که اطلاعاتشان جداگانه "
-            "قابل دریافت است، در این نسخه اندازه‌گیری نمی‌شود."
+            f"👥 تعداد رسمی اعضا طبق API: **{total}**\n\n"
+            "ℹ️ تعداد اعضایی که اطلاعاتشان قابل دریافت است، "
+            "هنوز محاسبه نشده است."
         )
 
     except Exception as exc:
-        import traceback
-        traceback.print_exc()
-
         print(
-            "Contact Manager - Extract users stats error: "
+            "Contact Manager - Member stats error: "
             f"{type(exc).__name__}: {exc}"
         )
 
         await event.reply(
-            "❌ دریافت آمار گروه/کانال ناموفق بود.\n"
+            "❌ دریافت آمار ناموفق بود.\n"
             f"نوع خطا: `{type(exc).__name__}`\n"
             f"جزئیات: `{str(exc)[:250]}`"
         )
