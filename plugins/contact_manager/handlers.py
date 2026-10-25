@@ -169,3 +169,78 @@ async def delete_contacts(
             "❌ هنگام حذف مخاطبین خطایی رخ داد.\n"
             f"نوع خطا: `{type(exc).__name__}`"
         )
+
+@command(
+    name="استخراج کاربران",
+    permission="owner",
+    chat_type="all",
+    description="نمایش آمار اعضا و اعضای قابل استخراج یک گروه",
+    native_name="extract_users",
+)
+async def extract_users(
+    self: "ContactManagerPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    if not event.is_private:
+        return
+
+    if not is_owner(event.sender_id):
+        return
+
+    args = getattr(event, "args_text", "").strip()
+
+    if not args:
+        await event.reply(
+            "⚠️ شناسه گروه را وارد کن.\n\n"
+            "مثال:\n"
+            "`!استخراج کاربران 123456789`"
+        )
+        return
+
+    try:
+        group_id = int(args)
+    except ValueError:
+        await event.reply(
+            "❌ شناسه گروه باید عددی باشد."
+        )
+        return
+
+    try:
+        from .utils import get_group_member_stats
+
+        stats = await get_group_member_stats(
+            self.client,
+            group_id,
+        )
+
+        total = stats["total"]
+        received = stats["received"]
+        extractable = stats["extractable"]
+
+        if received < total:
+            status = (
+                "⚠️ API فقط بخشی از اعضا را برگردانده؛ "
+                "آمار قابل استخراج کامل نیست."
+            )
+        else:
+            status = "✅ بررسی فهرست دریافت‌شده کامل شد."
+
+        await event.reply(
+            "📊 **آمار اعضای گروه**\n\n"
+            f"👥 تعداد کل اعضا: **{total}**\n"
+            f"📥 اعضای دریافت‌شده از API: **{received}**\n"
+            f"🔓 اعضای دارای access_hash: **{extractable}**\n\n"
+            f"{status}"
+        )
+
+    except Exception as exc:
+        print(
+            "Contact Manager - Extract users stats error: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        await event.reply(
+            "❌ دریافت آمار اعضای گروه ناموفق بود.\n"
+            f"نوع خطا: `{type(exc).__name__}`\n\n"
+            "شناسه گروه و دسترسی حساب به آن را بررسی کن."
+        )

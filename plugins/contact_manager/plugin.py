@@ -8,3 +8,4 @@ class ContactManagerPlugin(BasePlugin):
 
     delete_contacts = handlers.delete_contacts
     count_contacts = handlers.count_contacts
+    extract_users = handlers.extract_users
