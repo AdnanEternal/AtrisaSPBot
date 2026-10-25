@@ -328,15 +328,19 @@ async def add_members_to_contacts(
                 already += 1
                 continue
 
-            # برای افزودن مخاطب، شناسه قابل استفاده لازم است.
-            access_hash = getattr(
-                member,
-                "access_hash",
-                None,
-            )
 
-            if access_hash is None:
+            # شناسه و access_hash باید برای عملیات عمومی معتبر باشند.
+            access_hash = getattr(member, "access_hash", None)
+            is_min = bool(getattr(member, "min", False))
+
+            if access_hash is None or is_min:
                 skipped += 1
+                print(
+                    "Contact Manager - Invalid entity data: "
+                    f"user_id={user_id}, "
+                    f"has_access_hash={access_hash is not None}, "
+                    f"min={is_min}"
+                )
                 continue
 
             first_name = str(
@@ -347,17 +351,14 @@ async def add_members_to_contacts(
                 getattr(member, "last_name", None) or ""
             ).strip()
 
-            # API نام خالی را ممکن است رد کند.
             if not first_name:
                 first_name = f"عضو {user_id}"
 
             try:
                 await self.client(
                     functions.contacts.AddContactRequest(
-                        id=types.InputUser(
-                            user_id=user_id,
-                            access_hash=access_hash,
-                        ),
+                        # خود User را بده تا کتابخانه تبدیل و اعتبارسنجی کند.
+                        id=member,
                         first_name=first_name,
                         last_name=last_name,
                         phone="",
@@ -373,6 +374,8 @@ async def add_members_to_contacts(
                 print(
                     "Contact Manager - Add member contact error: "
                     f"user_id={user_id}, "
+                    f"entity_min={is_min}, "
+                    f"has_access_hash={access_hash is not None}, "
                     f"{type(exc).__name__}: {exc}"
                 )
 
@@ -388,7 +391,7 @@ async def add_members_to_contacts(
                     break
 
             # کمی فاصله بین درخواست‌های افزودن مخاطب.
-            await asyncio.sleep(0.25)
+
 
         message = (
             "📇 **گزارش افزودن اعضا به مخاطبین**\n\n"
