@@ -210,37 +210,31 @@ async def extract_users(
 
         stats = await get_group_member_stats(
             self.client,
-            group_id,
+            args,
         )
 
+        title = stats.get("title") or "گروه"
         total = stats["total"]
-        received = stats["received"]
-        extractable = stats["extractable"]
-
-        if received < total:
-            status = (
-                "⚠️ API فقط بخشی از اعضا را برگردانده؛ "
-                "آمار قابل استخراج کامل نیست."
-            )
-        else:
-            status = "✅ بررسی فهرست دریافت‌شده کامل شد."
 
         await event.reply(
-            "📊 **آمار اعضای گروه**\n\n"
-            f"👥 تعداد کل اعضا: **{total}**\n"
-            f"📥 اعضای دریافت‌شده از API: **{received}**\n"
-            f"🔓 اعضای دارای access_hash: **{extractable}**\n\n"
-            f"{status}"
+            f"📊 **آمار {title}**\n\n"
+            f"👥 تعداد کل اعضا طبق API: **{total}**\n\n"
+            "ℹ️ این گزارش تعداد کل را نشان می‌دهد؛ "
+            "تعداد اعضای قابل دریافت به‌صورت جداگانه "
+            "از شمارندهٔ سرور قابل محاسبه نیست."
         )
 
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
+
         print(
             "Contact Manager - Extract users stats error: "
             f"{type(exc).__name__}: {exc}"
         )
 
         await event.reply(
-            "❌ دریافت آمار اعضای گروه ناموفق بود.\n"
+            "❌ دریافت آمار گروه ناموفق بود.\n"
             f"نوع خطا: `{type(exc).__name__}`\n\n"
-            "شناسه گروه و دسترسی حساب به آن را بررسی کن."
+            "شناسه، دسترسی حساب به گروه و لاگ کامل خطا را بررسی کن."
         )
