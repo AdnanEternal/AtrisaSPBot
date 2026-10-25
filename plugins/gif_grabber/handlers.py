@@ -1740,32 +1740,3 @@ async def on_message(
                 f"{details}"
             )
             return
-
-    # --------------------------------------------------
-    # Existing behavior: save incoming GIFs
-    # --------------------------------------------------
-
-    gif = event.message.gif
-
-    if gif is None:
-        return
-
-    try:
-        await self.client(
-            SaveGifRequest(
-                id=gif,
-                unsave=False,
-            )
-        )
-
-    except Exception as exc:
-        print(
-            "❌ GIF Grabber - "
-            f"ذخیره گیف ناموفق بود: {exc}"
-        )
-        return
-
-    print(
-        "✅ GIF Grabber - "
-        "گیف به Saved GIFs اضافه شد."
-    )

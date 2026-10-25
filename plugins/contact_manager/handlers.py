@@ -329,17 +329,29 @@ async def add_members_to_contacts(
                 continue
 
 
-            # شناسه و access_hash باید برای عملیات عمومی معتبر باشند.
+            # فقط کاربران واقعی و حذف‌نشده را بررسی کن.
+            if isinstance(member, types.UserEmpty):
+                skipped += 1
+                continue
+
+            if not isinstance(member, types.User):
+                skipped += 1
+                continue
+
+            if getattr(member, "deleted", False):
+                skipped += 1
+                continue
+
             access_hash = getattr(member, "access_hash", None)
             is_min = bool(getattr(member, "min", False))
 
             if access_hash is None or is_min:
                 skipped += 1
                 print(
-                    "Contact Manager - Invalid entity data: "
+                    "Contact Manager - Skipping member: "
                     f"user_id={user_id}, "
-                    f"has_access_hash={access_hash is not None}, "
-                    f"min={is_min}"
+                    f"entity_min={is_min}, "
+                    f"has_access_hash={access_hash is not None}"
                 )
                 continue
 
@@ -354,11 +366,23 @@ async def add_members_to_contacts(
             if not first_name:
                 first_name = f"عضو {user_id}"
 
+            fresh_member = None
+
             try:
+                # موجودیت کاربر را دوباره از API دریافت کن.
+                fresh_member = await self.client.get_entity(member)
+
+                if (
+                    isinstance(fresh_member, types.UserEmpty)
+                    or not isinstance(fresh_member, types.User)
+                    or getattr(fresh_member, "deleted", False)
+                ):
+                    skipped += 1
+                    continue
+
                 await self.client(
                     functions.contacts.AddContactRequest(
-                        # خود User را بده تا کتابخانه تبدیل و اعتبارسنجی کند.
-                        id=member,
+                        id=fresh_member,
                         first_name=first_name,
                         last_name=last_name,
                         phone="",
@@ -374,23 +398,17 @@ async def add_members_to_contacts(
                 print(
                     "Contact Manager - Add member contact error: "
                     f"user_id={user_id}, "
-                    f"entity_min={is_min}, "
-                    f"has_access_hash={access_hash is not None}, "
+                    f"refreshed_entity={fresh_member is not None}, "
                     f"{type(exc).__name__}: {exc}"
                 )
 
-                # در صورت محدودیت نرخ، ادامه نده.
                 error_name = type(exc).__name__.lower()
                 error_text = str(exc).lower()
 
-                if (
-                    "flood" in error_name
-                    or "flood" in error_text
-                ):
+                if "flood" in error_name or "flood" in error_text:
                     stopped_by_rate_limit = True
                     break
-
-            # کمی فاصله بین درخواست‌های افزودن مخاطب.
+                # کمی فاصله بین درخواست‌های افزودن مخاطب.
 
 
         message = (
