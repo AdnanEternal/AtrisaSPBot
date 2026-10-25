@@ -90,11 +90,15 @@ async def count_retrievable_members(client, entity):
 
     return len(members)
 
-async def get_all_members(client,entity):
+async def get_all_members(client, entity, limit=None):
+    """دریافت اعضای قابل بازیابی گروه با سقف اختیاری."""
+
     members = await client.get_participants(
         entity,
+        limit=limit,
         filter=ChannelParticipantsRecent(),
     )
+
     return members
 
 async def get_chat_member_stats(client, chat_ref):

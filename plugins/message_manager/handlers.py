@@ -1,7 +1,9 @@
+import asyncio
+
 
 from typing import TYPE_CHECKING
 
-from splusthon import events
+from splusthon import events,functions
 
 from core.decorators import command
 
@@ -10,6 +12,14 @@ if TYPE_CHECKING:
 
 
 MAX_MESSAGES_PER_COMMAND = 10000000
+
+async def get_contacts(client):
+    """دریافت فهرست فعلی مخاطبین حساب."""
+    result = await client(
+        functions.contacts.GetContactsRequest(hash=0)
+    )
+
+    return list(getattr(result, "users", None) or [])
 
 
 async def resolve_target(client, target_id: int):
@@ -147,3 +157,143 @@ async def send_text_messages(
         f"✅ ارسال موفق: {sent}\n"
         f"❌ ارسال ناموفق: {failed}"
     )
+
+
+@command(
+    name="ارسال پیام به مخاطبین",
+    permission="owner",
+    chat_type="all",
+    description="ارسال یک پیام به تمام مخاطبین حساب",
+    native_name="send_message_to_contacts",
+)
+async def send_message_to_contacts(
+    self: "MessageManagerPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    if not event.is_private:
+        return
+
+    # فقط مالک اجازه اجرای دستور را دارد.
+    from core.permissions import is_owner
+
+    if not is_owner(event.sender_id):
+        return
+
+    # تمام متن بعد از نام دستور، متن پیام است.
+    message_text = getattr(
+        event,
+        "args_text",
+        "",
+    )
+
+    if not message_text.strip():
+        await event.reply(
+            "❌ متن پیام را وارد کن.\n\n"
+            "مثال:\n"
+            "`!ارسال پیام به مخاطبین سلام به همه`"
+        )
+        return
+
+    try:
+        contacts = await get_contacts(self.client)
+
+    except Exception as exc:
+        print(
+            "Message Manager - Get contacts error: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        await event.reply(
+            "❌ دریافت فهرست مخاطبین ناموفق بود.\n"
+            f"خطا: `{type(exc).__name__}`"
+        )
+        return
+
+    if not contacts:
+        await event.reply(
+            "ℹ️ هیچ مخاطبی برای ارسال پیام پیدا نشد."
+        )
+        return
+
+    # جلوگیری از ارسال تکراری به شناسه‌های یکسان.
+    unique_contacts = []
+    seen_ids = set()
+
+    for contact in contacts:
+        user_id = getattr(contact, "id", None)
+
+        if user_id is None or user_id in seen_ids:
+            continue
+
+        seen_ids.add(user_id)
+        unique_contacts.append(contact)
+
+    if not unique_contacts:
+        await event.reply(
+            "ℹ️ مخاطب قابل پردازشی پیدا نشد."
+        )
+        return
+
+    sent = 0
+    failed = 0
+    processed = 0
+    stopped_by_rate_limit = False
+
+    await event.reply(
+        "📨 ارسال پیام به مخاطبین شروع شد.\n"
+        f"👥 تعداد مخاطبین: {len(unique_contacts)}"
+    )
+
+    for index, contact in enumerate(unique_contacts):
+        user_id = getattr(contact, "id", None)
+
+        try:
+            await self.client.send_message(
+                contact,
+                message_text,
+            )
+
+            sent += 1
+            processed += 1
+
+        except Exception as exc:
+            failed += 1
+            processed += 1
+
+            error_name = type(exc).__name__.lower()
+            error_text = str(exc).lower()
+
+            print(
+                "Message Manager - Send to contact failed: "
+                f"user_id={user_id}, "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            # در صورت مشاهده محدودیت نرخ، ارسال را متوقف کن.
+            if (
+                "flood" in error_name
+                or "flood" in error_text
+            ):
+                stopped_by_rate_limit = True
+                break
+
+        # فاصله بین ارسال‌ها برای کاهش احتمال محدودیت نرخ.
+        if index < len(unique_contacts) - 1:
+            await asyncio.sleep(1)
+
+    remaining = len(unique_contacts) - processed
+
+    report = (
+        "📋 **گزارش ارسال پیام به مخاطبین**\n\n"
+        f"👥 تعداد مخاطبین: {len(unique_contacts)}\n"
+        f"✅ ارسال موفق: {sent}\n"
+        f"❌ ارسال ناموفق: {failed}"
+    )
+
+    if stopped_by_rate_limit:
+        report += (
+            "\n⚠️ به‌دلیل محدودیت نرخ، ارسال متوقف شد.\n"
+            f"⏭️ مخاطبین باقی‌مانده: {remaining}"
+        )
+
+    await event.reply(report)
