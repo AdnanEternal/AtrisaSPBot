@@ -4,6 +4,7 @@ from . import memory
 from typing import TYPE_CHECKING
 
 from splusthon import events,functions
+from splusthon.errors import FloodWaitError, PeerFloodError
 
 from core.decorators import command
 
@@ -267,7 +268,10 @@ async def send_message_to_contacts(
     sent = 0
     failed = 0
     processed = 0
-    stopped_by_rate_limit = False
+
+    flood_wait_count = 0
+    flood_wait_seconds_total = 0
+    stopped_by_peer_flood = False
 
     await event.reply(
         "📨 ارسال پیام به مخاطبین شروع شد.\n"
@@ -276,66 +280,105 @@ async def send_message_to_contacts(
 
     for index, contact in enumerate(unique_contacts):
         user_id = getattr(contact, "id", None)
+        send_succeeded = False
 
-        try:
-
-            await self.client.send_message(
-                contact,
-                message_text,
-            )
-
-            # فقط ارسال موفق در حافظه ثبت می‌شود.
+        # در صورت FloodWait، همان مخاطب دوباره امتحان می‌شود.
+        while True:
             try:
-                await memory.mark_contact_sent(
-                    self.db,
-                    user_id,
+                await self.client.send_message(
+                    contact,
+                    message_text,
                 )
-            except Exception as exc:
+
+                send_succeeded = True
+                break
+
+            except FloodWaitError as exc:
+                # مدت انتظار را از خود خطای سرور می‌گیریم.
+                wait_seconds = max(
+                    1,
+                    int(getattr(exc, "seconds", 1) or 1),
+                )
+
+                flood_wait_count += 1
+                flood_wait_seconds_total += wait_seconds
+
                 print(
-                    "Message Manager - Save memory error: "
+                    "Message Manager - FloodWait: "
+                    f"user_id={user_id}, "
+                    f"wait={wait_seconds}s, "
+                    f"retrying_same_contact=True"
+                )
+
+                # نه مخاطب را ناموفق حساب می‌کنیم
+                # و نه به مخاطب بعدی می‌رویم.
+                await asyncio.sleep(wait_seconds)
+                continue
+
+            except PeerFloodError as exc:
+                failed += 1
+                processed += 1
+                stopped_by_peer_flood = True
+
+                print(
+                    "Message Manager - PeerFlood: "
                     f"user_id={user_id}, "
                     f"{type(exc).__name__}: {exc}"
                 )
 
-                # برای جلوگیری از ارسال تکراری در همین اجرا،
-                # ادامهٔ ارسال را متوقف می‌کنیم.
-                sent += 1
+                # این محدودیت را با مکث کوتاه دور نمی‌زنیم.
+                break
+
+            except Exception as exc:
+                failed += 1
                 processed += 1
 
-                await event.reply(
-                    "⚠️ پیام ارسال شد، اما ذخیرهٔ شناسهٔ مخاطب "
-                    "در دیتابیس ناموفق بود. ارسال متوقف شد؛ "
-                    "ممکن است این مخاطب در اجرای بعدی دوباره "
-                    "انتخاب شود."
+                print(
+                    "Message Manager - Send to contact failed: "
+                    f"user_id={user_id}, "
+                    f"{type(exc).__name__}: {exc}"
                 )
-                return
 
+                break
+
+        # محدودیت کلی ارسال دریافت شده است.
+        if stopped_by_peer_flood:
+            break
+
+        # این مخاطب به دلیل خطای دیگری ارسال ناموفق داشته است.
+        if not send_succeeded:
+            if index < len(unique_contacts) - 1:
+                await asyncio.sleep(1)
+            continue
+
+        # فقط پس از ارسال موفق، مخاطب را در حافظه ثبت کن.
+        try:
+            await memory.mark_contact_sent(
+                self.db,
+                user_id,
+            )
+
+        except Exception as exc:
             sent += 1
             processed += 1
 
-
-        except Exception as exc:
-            failed += 1
-            processed += 1
-
-            error_name = type(exc).__name__.lower()
-            error_text = str(exc).lower()
-
             print(
-                "Message Manager - Send to contact failed: "
+                "Message Manager - Save memory error: "
                 f"user_id={user_id}, "
                 f"{type(exc).__name__}: {exc}"
             )
 
-            # در صورت مشاهده محدودیت نرخ، ارسال را متوقف کن.
-            if (
-                "flood" in error_name
-                or "flood" in error_text
-            ):
-                stopped_by_rate_limit = True
-                break
+            await event.reply(
+                "⚠️ پیام ارسال شد، اما ثبت مخاطب در دیتابیس "
+                "ناموفق بود. برای جلوگیری از ارسال تکراری، "
+                "عملیات متوقف شد."
+            )
+            return
 
-        # فاصله بین ارسال‌ها برای کاهش احتمال محدودیت نرخ.
+        sent += 1
+        processed += 1
+
+        # فاصلهٔ عادی بین دو مخاطب.
         if index < len(unique_contacts) - 1:
             await asyncio.sleep(1)
 
@@ -348,9 +391,18 @@ async def send_message_to_contacts(
         f"❌ ارسال ناموفق: {failed}"
     )
 
-    if stopped_by_rate_limit:
+    if flood_wait_count:
         report += (
-            "\n⚠️ به‌دلیل محدودیت نرخ، ارسال متوقف شد.\n"
+            "\n\n⏳ **مدیریت FloodWait**\n"
+            f"تعداد دفعات انتظار: {flood_wait_count}\n"
+            f"مجموع زمان انتظار: {flood_wait_seconds_total} ثانیه\n"
+            "پس از پایان زمان انتظار، ارسال دوباره امتحان شد."
+        )
+
+    if stopped_by_peer_flood:
+        report += (
+            "\n\n⚠️ **محدودیت کلی ارسال دریافت شد.**\n"
+            "برای جلوگیری از تشدید محدودیت، ارسال متوقف شد.\n"
             f"⏭️ مخاطبین باقی‌مانده: {remaining}"
         )
 
