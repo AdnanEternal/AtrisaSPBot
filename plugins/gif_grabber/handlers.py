@@ -1581,13 +1581,6 @@ async def on_message(
             )
             return
 
-    # منطق قبلی پلاگین از اینجا ادامه پیدا می‌کند.
-    if event.document:
-        print(
-            event.document.id,
-            "___access hash___",
-            event.document.access_hash,
-        )
 
     if (
         event.is_group is not True
@@ -1595,7 +1588,6 @@ async def on_message(
     ):
         return
 
-    print("event recived")
 
     raw_text = (event.raw_text or "").strip()
 
