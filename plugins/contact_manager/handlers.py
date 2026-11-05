@@ -7,6 +7,8 @@ from splusthon.tl.functions.messages import AddChatUserRequest
 from core.decorators import command
 from core.permissions import is_owner
 
+from datetime import datetime, timedelta, timezone
+
 from .utils import (
     get_contacts,
     get_contact_count,
@@ -24,6 +26,44 @@ from .utils import (
     get_all_members,
     resolve_chat_entity,
 )
+
+
+def was_seen_within_week(user) -> bool:
+    status = getattr(user, "status", None)
+
+    # آنلاین یا دارای وضعیت حضور اخیر
+    if isinstance(
+        status,
+        (
+            types.UserStatusOnline,
+            types.UserStatusRecently,
+            types.UserStatusLastWeek,
+        ),
+    ):
+        return True
+
+    # بررسی زمان دقیق آخرین بازدید
+    if isinstance(status, types.UserStatusOffline):
+        last_seen = getattr(status, "was_online", None)
+
+        if not isinstance(last_seen, datetime):
+            return False
+
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(
+                tzinfo=timezone.utc
+            )
+
+        age = (
+            datetime.now(timezone.utc)
+            - last_seen.astimezone(timezone.utc)
+        )
+
+        return timedelta(0) <= age < timedelta(days=7)
+
+    return False
+
+
 
 @command(
     name="تعداد مخاطبین",
@@ -507,6 +547,10 @@ async def add_contacts_to_chat(
                 continue
 
             if getattr(user, "deleted", False):
+                continue
+
+            # فقط مخاطبینی که در هفت روز اخیر فعال بوده‌اند
+            if not was_seen_within_week(user):
                 continue
 
             if getattr(user, "min", False):

@@ -4,7 +4,7 @@ from . import handlers
 
 class ContactManagerPlugin(BasePlugin):
     name = "Contact Manager"
-    version = "1.3.0"
+    version = "1.3.1"
 
     delete_contacts = handlers.delete_contacts
     count_contacts = handlers.count_contacts
