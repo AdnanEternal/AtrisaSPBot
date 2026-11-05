@@ -2,6 +2,8 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from splusthon import events, types, functions
+from splusthon.tl.functions.channels import InviteToChannelRequest
+from splusthon.tl.functions.messages import AddChatUserRequest
 from core.decorators import command
 from core.permissions import is_owner
 
@@ -435,6 +437,218 @@ async def add_members_to_contacts(
 
         await event.reply(
             "❌ عملیات افزودن اعضا ناموفق بود.\n"
+            f"نوع خطا: `{type(exc).__name__}`\n"
+            f"جزئیات: `{str(exc)[:200]}`"
+        )
+
+        
+@command(
+    name="افزودن مخاطبین به گروه",
+    permission="owner",
+    chat_type="all",
+    description="افزودن مخاطبین حساب به گروه یا کانال",
+    native_name="add_contacts_to_chat",
+)
+async def add_contacts_to_chat(
+    self: "ContactManagerPlugin",
+    event: events.NewMessage.Event,
+) -> None:
+    if not event.is_private or not is_owner(event.sender_id):
+        return
+
+    args = getattr(event, "args_text", "").strip()
+    parts = args.split()
+
+    if len(parts) != 2:
+        await event.reply(
+            "⚠️ شناسه یا نام کاربری مقصد و تعداد مخاطبین را وارد کن.\n\n"
+            "مثال:\n"
+            "`!افزودن مخاطبین به گروه 123456789 2`"
+        )
+        return
+
+    chat_ref, raw_limit = parts
+
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        await event.reply("❌ تعداد باید عدد صحیح باشد.")
+        return
+
+    if not 1 <= limit <= 1000:
+        await event.reply(
+            "❌ تعداد باید بین ۱ تا ۱۰ باشد."
+        )
+        return
+
+    try:
+        # پیدا کردن مقصد
+        entity = await resolve_chat_entity(
+            self.client,
+            chat_ref,
+        )
+
+        # دریافت مخاطبین
+        contacts = await get_contacts(self.client)
+
+        # انتخاب اولین مخاطبین قابل پردازش
+        candidates = []
+        seen_ids = set()
+
+        for user in contacts:
+            user_id = getattr(user, "id", None)
+
+            if user_id is None or user_id in seen_ids:
+                continue
+
+            seen_ids.add(user_id)
+
+            if not isinstance(user, types.User):
+                continue
+
+            if getattr(user, "deleted", False):
+                continue
+
+            if getattr(user, "min", False):
+                continue
+
+            if getattr(user, "access_hash", None) is None:
+                continue
+
+            candidates.append(user)
+
+            if len(candidates) >= limit:
+                break
+
+        if not candidates:
+            await event.reply(
+                "ℹ️ هیچ مخاطب قابل پردازشی پیدا نشد."
+            )
+            return
+
+        title = getattr(entity, "title", None) or "گروه/کانال"
+
+        await event.reply(
+            "⏳ **عملیات افزودن مخاطبین شروع شد.**\n\n"
+            f"🎯 مقصد: {title}\n"
+            f"👥 تعداد مخاطبین انتخاب‌شده: {len(candidates)}"
+        )
+
+        added = 0
+        already = 0
+        skipped = 0
+        failed = 0
+
+        stopped_by_flood = False
+        flood_seconds = None
+
+        for index, contact in enumerate(candidates):
+            try:
+                # تازه‌سازی اطلاعات مخاطب
+                fresh_contact = await self.client.get_entity(
+                    contact
+                )
+
+                if (
+                    not isinstance(fresh_contact, types.User)
+                    or getattr(fresh_contact, "deleted", False)
+                    or getattr(fresh_contact, "min", False)
+                    or getattr(fresh_contact, "access_hash", None) is None
+                ):
+                    skipped += 1
+
+                else:
+                    # کانال و سوپرگروه
+                    if isinstance(entity, types.Channel):
+                        await self.client(
+                            InviteToChannelRequest(
+                                channel=entity,
+                                users=[fresh_contact],
+                            )
+                        )
+
+                    # گروه معمولی
+                    elif isinstance(entity, types.Chat):
+                        await self.client(
+                            AddChatUserRequest(
+                                chat_id=entity.id,
+                                user_id=fresh_contact,
+                                fwd_limit=0,
+                            )
+                        )
+
+                    else:
+                        skipped += 1
+                        continue
+
+                    added += 1
+
+            except Exception as exc:
+                error_text = (
+                    f"{type(exc).__name__} {exc}"
+                ).upper()
+
+                if "FLOOD" in error_text:
+                    stopped_by_flood = True
+                    flood_seconds = getattr(
+                        exc, "seconds", None
+                    )
+                    print(
+                        "Contact Manager - Invite flood limit: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    break
+
+                elif (
+                    "USER_ALREADY_PARTICIPANT" in error_text
+                    or "USER_ALREADY_IN_CHAT" in error_text
+                ):
+                    already += 1
+
+                else:
+                    failed += 1
+
+                    print(
+                        "Contact Manager - Invite contact error: "
+                        f"user_id={getattr(contact, 'id', None)}, "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+            # فاصله بین درخواست‌ها
+            if index < len(candidates) - 1:
+                await asyncio.sleep(1)
+
+        # گزارش نهایی
+        message = (
+            "📋 **گزارش افزودن مخاطبین**\n\n"
+            f"🎯 مقصد: **{title}**\n"
+            f"👥 مخاطبین انتخاب‌شده: {len(candidates)}\n\n"
+            f"✅ با موفقیت افزوده‌شده: {added}\n"
+            f"ℹ️ از قبل عضو بودند: {already}\n"
+            f"⏭️ غیرقابل‌پردازش: {skipped}\n"
+            f"❌ ناموفق: {failed}"
+        )
+
+        if stopped_by_flood:
+            message += (
+                "\n\n⚠️ عملیات به دلیل محدودیت درخواست‌های سروش متوقف شد."
+            )
+
+            if flood_seconds is not None:
+                message += (
+                    f"\nزمان اعلام‌شده توسط سرور: {flood_seconds} ثانیه"
+                )
+
+        await event.reply(message)
+
+    except Exception as exc:
+        print(
+            "Contact Manager - Add contacts to chat error: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        await event.reply(
+            "❌ عملیات افزودن مخاطبین ناموفق بود.\n"
             f"نوع خطا: `{type(exc).__name__}`\n"
             f"جزئیات: `{str(exc)[:200]}`"
         )
