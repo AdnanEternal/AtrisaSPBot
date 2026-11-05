@@ -626,6 +626,7 @@ async def add_contacts_to_chat(
                         continue
 
                     added += 1
+                    print(user_id)
 
             except Exception as exc:
                 error_text = (
@@ -660,7 +661,7 @@ async def add_contacts_to_chat(
 
             # فاصله بین درخواست‌ها
             if index < len(candidates) - 1:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
 
         # گزارش نهایی
         message = (
